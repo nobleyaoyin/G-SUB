@@ -1,0 +1,539 @@
+/* Formatter Dashboard - isolated styles */
+
+.formatter-dashboard {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 22px;
+  background: #fff;
+  border: 1px solid #dbe3ee;
+  border-radius: 14px;
+  color: #172b4d;
+}
+
+.formatter-dashboard .initial-editing-heading h2,
+.formatter-dashboard > h2 {
+  margin: 0;
+  color: #172b4d;
+  font-size: 21px;
+  font-weight: 700;
+}
+
+.formatter-manuscript-list {
+  display: grid;
+  gap: 12px;
+}
+
+.formatter-manuscript-list .initial-editing-item {
+  padding: 18px;
+  border: 1px solid #dbe3ee;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.formatter-manuscript-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.formatter-manuscript-header {
+  padding: 18px;
+  border: 1px solid #dbe3ee;
+  border-radius: 11px;
+  background: #fff;
+}
+
+.formatter-manuscript-header h3 {
+  margin: 0 0 12px;
+  color: #172b4d;
+  font-size: 19px;
+  overflow-wrap: anywhere;
+}
+
+.formatter-status {
+  display: inline-block;
+  padding: 5px 12px;
+  border-radius: 20px;
+  background: #dcfce7;
+  color: #166534;
+  font-size: 13px;
+  font-weight: 650;
+  text-transform: capitalize;
+}
+
+.formatter-progress-section {
+  min-width: 0;
+}
+
+.formatter-progress-section > p {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.formatter-collapsible {
+  border: 1px solid #dbe3ee;
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.formatter-collapsible summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 64px;
+  padding: 16px 18px;
+  color: #172b4d;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  list-style: none;
+}
+
+.formatter-collapsible summary::-webkit-details-marker {
+  display: none;
+}
+
+.formatter-collapsible summary::after {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid #475569;
+  border-bottom: 2px solid #475569;
+  transform: rotate(45deg);
+  transition: transform .18s ease;
+}
+
+.formatter-collapsible[open] summary::after {
+  transform: rotate(225deg);
+}
+
+.formatter-collapsible summary:hover {
+  background: #f8fafc;
+}
+
+.formatter-collapsible summary:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: -3px;
+}
+
+.formatter-section-content {
+  padding: 4px 18px 18px;
+  border-top: 1px solid #edf1f6;
+  color: #475569;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.formatter-history-item {
+  padding: 14px 0;
+  border-bottom: 1px solid #e8edf4;
+}
+
+.formatter-history-item:last-child {
+  border-bottom: 0;
+}
+
+.formatter-history-item p {
+  margin: 6px 0;
+  font-size: 13px;
+}
+
+.formatter-actions {
+  padding: 18px;
+  border: 1px solid #dbe3ee;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.formatter-actions > h4 {
+  margin: 0 0 16px;
+  color: #172b4d;
+  font-size: 17px;
+}
+
+.formatter-dashboard .formatter-actions button,
+.formatter-dashboard .formatter-history-item button {
+  min-height: 40px;
+  padding: 9px 16px;
+  border: 1px solid #2563eb;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.formatter-dashboard .formatter-actions button:hover:not(:disabled),
+.formatter-dashboard .formatter-history-item button:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.formatter-dashboard .formatter-actions button:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+.formatter-dashboard .formatter-actions .formatter-download-button {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.formatter-invitation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.formatter-invitation-actions p {
+  flex-basis: 100%;
+  margin: 0 0 4px;
+  color: #475569;
+  font-size: 13px;
+}
+
+.formatter-dashboard .formatting-proof-form {
+  max-width: none;
+  margin: 12px 0 0;
+}
+
+.formatter-dashboard .manuscript-back {
+  margin-bottom: 16px;
+}
+
+@media (max-width: 640px) {
+  .formatter-dashboard {
+    padding: 14px;
+  }
+
+  .formatter-manuscript-header {
+    padding: 14px;
+  }
+
+  .formatter-manuscript-header h3 {
+    font-size: 17px;
+  }
+
+  .formatter-collapsible summary {
+    min-height: 56px;
+    padding: 13px;
+  }
+
+  .formatter-section-content {
+    padding: 4px 13px 14px;
+  }
+
+  .formatter-actions {
+    padding: 14px;
+  }
+
+  .formatter-invitation-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .formatter-invitation-actions button {
+    width: 100%;
+  }
+}
+
+/* =========================================
+   Integrated Editor Formatting UI
+   ========================================= */
+
+/* Formatting-only assignment: avoid nested card borders */
+.editor-formatting-card {
+  border-color: #cbd5e1;
+  background: #ffffff;
+}
+
+.editor-formatting-card > .formatter-dashboard {
+  margin-top: 20px;
+  padding: 20px 0 0;
+  border: 0;
+  border-top: 1px solid #e2e8f0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* Consistent manuscript header */
+.formatter-manuscript-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  background: #f8fafc;
+}
+
+.formatter-manuscript-header h3 {
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* Progress area */
+.formatter-progress-section {
+  padding: 18px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+/* History version cards */
+.formatter-history-item {
+  padding: 16px;
+  margin-bottom: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  background: #f8fafc;
+}
+
+.formatter-history-item:last-child {
+  margin-bottom: 0;
+}
+
+.formatter-history-item p:first-child {
+  color: #172b4d;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.formatter-history-item p {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* Formatting actions */
+.formatter-actions {
+  background: #ffffff;
+  border-color: #cbd5e1;
+}
+
+.formatter-actions > h4 {
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.formatter-dashboard .formatting-proof-form {
+  padding: 18px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.formatter-dashboard .formatting-proof-form h4 {
+  margin-top: 0;
+  color: #172b4d;
+}
+
+.formatter-dashboard .formatting-proof-form label {
+  display: block;
+  margin-bottom: 14px;
+  color: #334155;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.formatter-dashboard .formatting-proof-form input[type="file"],
+.formatter-dashboard .formatting-proof-form textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 8px;
+}
+
+.formatter-dashboard .formatting-proof-form textarea {
+  min-height: 100px;
+  padding: 11px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #172b4d;
+  resize: vertical;
+}
+
+.formatter-dashboard button:focus-visible {
+  outline: 3px solid #93c5fd;
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .editor-formatting-card > .formatter-dashboard {
+    padding-top: 14px;
+  }
+
+  .formatter-manuscript-header {
+    align-items: flex-start;
+  }
+
+  .formatter-progress-section {
+    padding: 12px;
+  }
+
+  .formatter-history-item {
+    padding: 12px;
+  }
+
+  .formatter-dashboard .formatting-proof-form {
+    padding: 13px;
+  }
+}
+
+/* =========================================
+   Formatting History Version Cards
+   Integrated Editor Workflow
+   ========================================= */
+
+.formatter-history {
+  margin: 18px 0;
+}
+
+.formatter-history-count {
+  margin-left: auto;
+  margin-right: 12px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.formatter-history-item {
+  padding: 20px 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.formatter-history-item:last-child {
+  border-bottom: 0;
+}
+
+.formatter-history-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.formatter-history-heading h4 {
+  margin: 0 0 6px;
+  color: #172b4d;
+  font-size: 16px;
+}
+
+.formatter-history-date {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.formatter-history-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.formatter-latest-badge,
+.formatter-history-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.formatter-latest-badge {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.formatter-history-status {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.formatter-history-status.approved {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.formatter-history-status.pending_author,
+.formatter-history-status.pending_eic {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.formatter-history-status.revision_requested {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.formatter-review-block {
+  margin-top: 12px;
+  padding: 13px 15px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  background: #ffffff;
+}
+
+.formatter-review-block h5 {
+  margin: 0;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.formatter-review-block > p {
+  margin: 8px 0 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.formatter-review-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.formatter-review-date {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.formatter-dashboard .formatter-history-item .formatter-download-button {
+  width: 100%;
+  margin-top: 14px;
+}
+
+@media (max-width: 640px) {
+  .formatter-history-item {
+    padding: 15px 0;
+  }
+
+  .formatter-history-heading {
+    flex-direction: column;
+  }
+
+  .formatter-history-badges {
+    justify-content: flex-start;
+  }
+
+  .formatter-review-block {
+    padding: 12px;
+  }
+
+  .formatter-review-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

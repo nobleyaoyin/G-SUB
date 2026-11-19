@@ -1,0 +1,338 @@
+.submission-wizard {
+  width: 100%;
+  margin: 0 0 28px;
+  padding: 30px;
+  background: var(--surface, #ffffff);
+  color: var(--text-primary, #172033);
+  border: 1px solid var(--control-border, #d9e0e9);
+  border-radius: 14px;
+  box-sizing: border-box;
+}
+
+.submission-wizard * {
+  box-sizing: border-box;
+}
+
+.wizard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+}
+
+.wizard-eyebrow {
+  margin: 0 0 8px;
+  color: var(--text-secondary, #64748b);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+}
+
+.wizard-header h2 {
+  margin: 0;
+  font-size: 25px;
+}
+
+.wizard-description {
+  max-width: 650px;
+  margin: 10px 0 0;
+  color: var(--text-secondary, #64748b);
+  line-height: 1.6;
+}
+
+.wizard-close {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--control-border, #d9e0e9);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 24px;
+  cursor: pointer;
+}
+
+.wizard-progress {
+  margin: 30px 0;
+}
+
+.wizard-progress-heading,
+.wizard-step-labels {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.wizard-progress-heading {
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+
+.wizard-progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 20px;
+  background: var(--disabled-surface, #e9edf2);
+}
+
+.wizard-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary-color, #2563eb);
+  transition: width 0.2s ease;
+}
+
+.wizard-step-labels {
+  margin-top: 12px;
+  color: var(--text-secondary, #64748b);
+}
+
+.wizard-step-labels .active {
+  color: var(--primary-color, #2563eb);
+  font-weight: 700;
+}
+
+.wizard-step-labels .completed {
+  color: var(--success-text, #15803d);
+  font-weight: 600;
+}
+
+.wizard-form {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.wizard-section-heading h3 {
+  margin: 0;
+  font-size: 19px;
+}
+
+.wizard-section-heading p {
+  margin: 7px 0 0;
+  color: var(--text-secondary, #64748b);
+}
+
+.wizard-field {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.wizard-field label {
+  font-weight: 650;
+}
+
+.wizard-field label span {
+  color: #dc2626;
+}
+
+.wizard-field input,
+.wizard-field textarea {
+  width: 100%;
+  padding: 13px 14px;
+  border: 1px solid var(--control-border, #cbd5e1);
+  border-radius: 8px;
+  background: var(--surface, #ffffff);
+  color: var(--text-primary, #172033);
+  font: inherit;
+}
+
+.wizard-field textarea {
+  resize: vertical;
+  min-height: 150px;
+  line-height: 1.6;
+}
+
+.wizard-field input:focus,
+.wizard-field textarea:focus {
+  outline: 2px solid var(--primary-color, #2563eb);
+  outline-offset: 2px;
+}
+
+.wizard-field small {
+  color: var(--text-secondary, #64748b);
+  font-size: 12px;
+}
+
+.wizard-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.wizard-action-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.wizard-primary,
+.wizard-secondary {
+  min-height: 42px;
+  padding: 10px 17px;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wizard-primary {
+  border: 1px solid var(--primary-color, #2563eb);
+  background: var(--primary-color, #2563eb);
+  color: white;
+}
+
+.wizard-secondary {
+  border: 1px solid var(--control-border, #cbd5e1);
+  background: var(--surface, #ffffff);
+  color: var(--text-primary, #172033);
+}
+
+.wizard-primary:disabled,
+.wizard-secondary:disabled,
+.wizard-close:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.wizard-manuscript-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 16px;
+  border: 1px solid var(--control-border, #d9e0e9);
+  border-radius: 9px;
+}
+
+.wizard-summary-label {
+  color: var(--text-secondary, #64748b);
+  font-size: 12px;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.wizard-upload-area {
+  padding: 25px;
+  border: 2px dashed var(--control-border, #cbd5e1);
+  border-radius: 10px;
+}
+
+.wizard-upload-area > label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.wizard-upload-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--disabled-surface, #edf2f7);
+  font-size: 25px;
+}
+
+.wizard-upload-area > label span:last-child {
+  color: var(--text-secondary, #64748b);
+  font-size: 13px;
+}
+
+.wizard-upload-area input[type="file"] {
+  display: block;
+  width: 100%;
+  margin-top: 18px;
+  color: var(--text-primary, #172033);
+}
+
+.wizard-selected-file,
+.wizard-uploaded-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 12px;
+  border: 1px solid var(--control-border, #d9e0e9);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+.wizard-selected-file button {
+  border: none;
+  background: transparent;
+  color: var(--danger-text, #b91c1c);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.wizard-uploaded-file {
+  justify-content: flex-start;
+}
+
+.wizard-uploaded-file strong {
+  color: var(--success-text, #15803d);
+}
+
+.wizard-alert {
+  margin: 18px 0;
+  padding: 13px 15px;
+  border-radius: 8px;
+  line-height: 1.5;
+}
+
+.wizard-alert.error {
+  background: var(--danger-surface, #fef2f2);
+  color: var(--danger-text, #991b1b);
+}
+
+.wizard-alert.success {
+  background: var(--success-surface, #f0fdf4);
+  color: var(--success-text, #166534);
+}
+
+.wizard-footer-note {
+  margin: 0;
+  color: var(--text-secondary, #64748b);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 650px) {
+  .submission-wizard {
+    padding: 19px;
+  }
+
+  .wizard-header h2 {
+    font-size: 21px;
+  }
+
+  .wizard-step-labels {
+    font-size: 11px;
+  }
+
+  .wizard-actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .wizard-action-group {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .wizard-actions button {
+    width: 100%;
+  }
+
+  .wizard-upload-area {
+    padding: 17px;
+  }
+}

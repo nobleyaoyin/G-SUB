@@ -1,0 +1,2 @@
+# Optional test runner; install separately in a disposable development environment.
+pytest>=8,<10

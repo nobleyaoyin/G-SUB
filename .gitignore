@@ -1,0 +1,77 @@
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+test_account.txt
+
+# SQLite databases and backups
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+*.pem
+*.key
+*.p12
+*.pfx
+*.bak
+*.backup
+*.before_*
+backups/
+
+# Uploaded manuscript files
+uploads/
+.demo_data/
+.sandbox/
+.sandbox_data/
+.local_data/
+test-results/
+playwright-report/
+*.tmp
+
+# Frontend
+node_modules/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Additional development backups
+*.backup*
+
+# Large reference archives (keep locally, do not commit)
+references/1/
+references/1.zip
+references/Merged.pdf
+
+# Isolated collaboration runtime and tests
+.test-data/
+.private-artifacts/
+
+# Additional isolated interpreter environments
+.venv312/

@@ -1,0 +1,97 @@
+
+:root {
+  color-scheme: light;
+  --brand-navy: #0f172a;
+  --brand-gold: #e7be45;
+  --surface-secondary: #f8fafc;
+  --surface-elevated: #ffffff;
+  --text-muted: #526176;
+  --border-subtle: #cbd5e1;
+  --action-primary: #1d4ed8;
+  --action-primary-hover: #1e40af;
+  --action-secondary-surface: #eff6ff;
+  --info-text: #173a78;
+  --info-surface: #eff6ff;
+  --success-surface: #dcfce7;
+  --warning-surface: #fef3c7;
+  --error-surface: #fee2e2;
+  --sidebar-text: #f8fafc;
+  --sidebar-muted: #cbd5e1;
+  --sidebar-hover: #1e293b;
+  --sidebar-focus: #93c5fd;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --surface-page: #f1f5f9;
+  --surface-control: #ffffff;
+  --control-border: #64748b;
+  --focus-ring: #1d4ed8;
+  --disabled-text: #475569;
+  --disabled-surface: #e2e8f0;
+  --error-text: #b91c1c;
+  --warning-accent: #D9903D;
+  --success-text: #166534;
+  --warning-text: #92400e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  font-family: Arial, Helvetica, sans-serif;
+  color: var(--text-primary);
+  background: var(--surface-page);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  color: var(--text-primary);
+}
+
+input, select, textarea {
+  color: var(--text-primary);
+  background-color: var(--surface-control);
+}
+
+input::placeholder, textarea::placeholder {
+  color: var(--text-secondary);
+  opacity: 1;
+}
+
+button:focus-visible, input:focus-visible, select:focus-visible,
+textarea:focus-visible, a:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
+button:disabled {
+  color: var(--disabled-text);
+  background-color: var(--disabled-surface);
+  border-color: var(--control-border);
+  cursor: not-allowed;
+}
+
+/* Shared document editor controls match the dashboard's compact panels. */
+[data-online-editor] { margin: 1rem 0; padding: 1rem; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-secondary); }
+[data-online-editor] label { display: block; font-weight: 600; }
+[data-online-editor] textarea { display: block; width: 100%; max-width: 100%; margin: .5rem 0; padding: .75rem; border: 1px solid var(--control-border); border-radius: 8px; }
+[data-online-editor] button { margin: .25rem .5rem .25rem 0; padding: .5rem .75rem; border: 1px solid var(--control-border); border-radius: 8px; cursor: pointer; }
+[data-online-editor] button:disabled { cursor: not-allowed; }
+[data-online-editor] [role="alert"] { color: var(--error-text); }
+[data-online-editor] [role="status"] { color: var(--success-text); }
+
+.manuscript-back { display: inline-flex; align-items: center; margin: 0 0 1rem; padding: .5rem .75rem; border: 1px solid #94a3b8; border-radius: 8px; color: #1e3a5f; background: #fff; cursor: pointer; }
+.manuscript-back:hover { background: #eff6ff; }
+
+/* Keep role and workflow headings readable without changing the timeline. */
+.dashboard-main > h2, .editor-main > h2, .reviewer-main > h2,
+.eic-page > header h1, .initial-editing-heading h2 { color: var(--text-primary); line-height: 1.25; }
+.eic-page form label, .initial-editing-form label { color: var(--text-primary); }

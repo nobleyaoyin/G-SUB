@@ -1,0 +1,131 @@
+.personal-notes {
+  margin: 20px 0;
+  padding: 20px;
+  border: 1px solid #dbe2ea;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #1f2937;
+}
+
+.personal-notes-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.personal-notes-header h3 {
+  margin: 0 0 5px;
+  color: #172554;
+}
+
+.personal-notes-header p {
+  margin: 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.personal-notes-count {
+  font-size: 12px;
+  color: #475569;
+  background: #f1f5f9;
+  padding: 6px 10px;
+  border-radius: 20px;
+}
+
+.personal-notes-form label {
+  display: block;
+  margin-bottom: 7px;
+  font-weight: 600;
+}
+
+.personal-notes-form textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 90px;
+  padding: 11px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  color: #1f2937;
+  background: #fff;
+  font: inherit;
+  resize: vertical;
+}
+
+.personal-notes-form-footer,
+.personal-note-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 9px;
+}
+
+.personal-notes-form-footer span,
+.personal-note-footer span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.personal-notes button {
+  padding: 7px 13px;
+  border: 0;
+  border-radius: 6px;
+  background: #1e40af;
+  color: #fff;
+  cursor: pointer;
+}
+
+.personal-notes button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.personal-notes-form-footer button + button,
+.personal-note-footer button + button {
+  margin-left: 8px;
+}
+
+.personal-notes .notes-cancel-button {
+  background: #64748b;
+}
+
+.personal-notes .notes-delete-button {
+  background: #b91c1c;
+}
+
+.personal-notes-list {
+  margin-top: 18px;
+}
+
+.personal-note-card {
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.personal-note-content {
+  margin: 0;
+  color: #1e293b;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+
+.personal-note-footer {
+  border-top: 1px solid #e2e8f0;
+  padding-top: 10px;
+}
+
+.personal-notes-empty {
+  color: #64748b;
+  font-size: 14px;
+}
+
+.personal-notes-error {
+  color: #b91c1c;
+  font-size: 13px;
+}

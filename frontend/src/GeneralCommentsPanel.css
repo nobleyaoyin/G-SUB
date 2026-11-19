@@ -1,0 +1,124 @@
+.general-comments-panel {
+  margin: 18px 0;
+  padding: 18px;
+  border: 1px solid #dce2ea;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.general-comments-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.general-comments-header h4 {
+  margin: 0 0 5px;
+}
+
+.general-comments-header p {
+  margin: 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.general-comments-badge {
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.general-comments-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.general-comment {
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.general-comment-meta {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.general-comment-meta time {
+  color: #64748b;
+}
+
+.general-comment > p {
+  margin: 9px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.general-comments-empty {
+  color: #64748b;
+  font-size: 14px;
+}
+
+.general-comments-form {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.general-comments-form label {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.general-comments-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  font: inherit;
+  resize: vertical;
+}
+
+.general-comments-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.general-comments-footer span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.general-comments-footer button {
+  padding: 9px 16px;
+  border: 0;
+  border-radius: 7px;
+  background: #1e40af;
+  color: white;
+  cursor: pointer;
+}
+
+.general-comments-footer button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.general-comments-error {
+  color: #b91c1c;
+  font-size: 13px;
+}

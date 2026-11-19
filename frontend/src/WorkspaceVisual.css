@@ -1,0 +1,124 @@
+/* Shared desktop treatment for selected manuscripts. The navigation and
+   role-specific workflow controls remain in their owning dashboards. */
+.app-shell {
+  --workspace-surface: var(--surface-control);
+  --workspace-border: #dbe3ee;
+  --workspace-muted-surface: #f8fafc;
+  --workspace-radius: 12px;
+}
+
+.app-shell [data-workspace="selected"] {
+  background: var(--workspace-surface);
+  border: 1px solid var(--workspace-border);
+  border-radius: var(--workspace-radius);
+  color: var(--text-primary);
+  padding: 22px;
+}
+
+.app-shell .author-content-layout.has-workspace { grid-template-columns: minmax(0, 1fr); }
+
+/* Keep one outer surface instead of surrounding the heading with another card. */
+.app-shell .manuscript-detail-section .manuscript-card,
+.app-shell .eic-grid.is-detail > main > .eic-manuscript-overview,
+.app-shell [data-workspace="selected"] .formatter-manuscript-header {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
+}
+.app-shell .eic-grid.is-detail > main > .eic-manuscript-overview { margin: 0 0 20px; }
+.app-shell [data-workspace="selected"] :is(.manuscript-card-top, .editor-manuscript-header, .reviewer-card-top, .eic-manuscript-heading, .formatter-manuscript-header) {
+  align-items: flex-start;
+  gap: 16px;
+}
+.app-shell [data-workspace="selected"] :is(.manuscript-card-top h3, .editor-manuscript-header h3, .reviewer-card-top h3, .eic-manuscript-heading h2, .formatter-manuscript-header h3) {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 21px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* Notes and comments remain separate native disclosures with their contents mounted. */
+.app-shell [data-workspace="selected"] :is(.workspace-context, .editor-context-panel, .eic-context-panel, .formatter-collapsible) {
+  margin: 12px 0;
+  border: 1px solid var(--workspace-border);
+  border-radius: 10px;
+  background: var(--workspace-muted-surface);
+}
+.app-shell [data-workspace="selected"] :is(.workspace-context, .editor-context-panel, .eic-context-panel, .formatter-collapsible) > summary {
+  padding: 14px 16px;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.app-shell [data-workspace="selected"] .workspace-context > :not(summary) { margin: 0 16px 16px; }
+.app-shell [data-workspace="selected"] .workspace-context > .personal-notes,
+.app-shell [data-workspace="selected"] .eic-context-content > :is(.personal-notes, .general-comments-panel) {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.app-shell [data-workspace="selected"] summary:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+.app-shell [data-workspace="selected"] :is(.manuscript-progress, .editor-actions, .formatter-actions) { min-width: 0; }
+
+/* In detail views the selected card already supplies the workspace boundary. */
+.app-shell :is(.editor-section.is-workspace, .reviewer-section.is-workspace) {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.app-shell [data-workspace="selected"] :is(.editor-overview, .editor-overview-progress, .formatter-progress-section) {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* Embedded workflows share the selected manuscript's outer surface. Keep
+   standalone workflow panels and the controls inside them unchanged. */
+.app-shell [data-workspace="selected"] .initial-editing-panel {
+  padding: 16px 0;
+  border: 0;
+  border-top: 1px solid var(--workspace-border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Secondary figures read as a compact row instead of separate cards. */
+.app-shell [data-workspace="selected"] .editor-overview-stat {
+  padding: 10px 12px;
+  border: 0;
+  border-left: 2px solid var(--workspace-border);
+  border-radius: 0;
+  background: transparent;
+}
+.app-shell [data-workspace="selected"] .editor-overview-stat > strong {
+  font-size: 21px;
+}
+
+/* History sections stay distinct; individual events become readable rows. */
+.app-shell [data-workspace="selected"] .eic-history-item {
+  padding: 12px 0;
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--workspace-border);
+  border-radius: 0;
+  background: transparent;
+}
+.app-shell [data-workspace="selected"] .eic-history-item:last-child {
+  border-bottom: 0;
+}
+
+/* Notes and staff comments retain their separate disclosures and permissions. */
+.app-shell [data-workspace="selected"] .editor-context-content > :is(.personal-notes, .general-comments-panel) {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
