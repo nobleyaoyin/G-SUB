@@ -106,6 +106,8 @@ export SECRET_KEY="$(.venv312/bin/python -c 'import secrets; print(secrets.token
 
 A new key invalidates tokens created with an earlier key. If local login sessions must survive restarts, store a separately generated key securely in an ignored local environment file. Never commit credentials or copy another developer's key.
 
+Workflow email is disabled unless `SMTP_HOST` is set. To enable it, configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM_EMAIL`, and optionally `SMTP_FROM_NAME`, `SMTP_USERNAME`, and `SMTP_PASSWORD` in the process environment. Username and password must be set together. `SMTP_USE_TLS=true` enables STARTTLS (the default); set it to `false` and `SMTP_USE_SSL=true` for implicit TLS, commonly on port 465. TLS and SSL cannot both be enabled. SMTP credentials must remain private and must not be committed. Workflow email is best-effort: a delivery failure is logged and does not undo a successful manuscript operation. Tests use mocks/fakes and never deliver real email.
+
 ## Database initialization
 
 **Collaboration Base Schema v1 is a newly established collaboration baseline; it is not a reconstruction of a historical pre-001 production schema.** The initializer applies the baseline and migrations 001–019 and 021 to a new disposable SQLite file. There is no migration 020.
@@ -150,6 +152,7 @@ mkdir -p .test-data/tmp
 export TMPDIR="$PWD/.test-data/tmp"
 PYTHONDONTWRITEBYTECODE=1 .venv312/bin/python -m pytest -p no:cacheprovider \
   --basetemp "$PWD/.test-data/pytest-local" \
+  tests/test_workflow_email.py \
   tests/test_phase26_backend_integration.py \
   tests/test_main_reviewer_authority.py \
   tests/test_main_reviewer_dependencies.py \

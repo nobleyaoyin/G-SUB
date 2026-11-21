@@ -56,6 +56,7 @@ from app.routers.final_workflow import summary_invitation, submissions as final_
 from app.routers.manuscripts import OnlineTextSave, validate_manuscript_file
 from app import editor_text_drafts, online_versions
 from app import blind_policy_store
+from app.email.service import notify_workflow_email
 from pydantic import BaseModel
 from typing import Literal
 
@@ -366,8 +367,23 @@ def perform_initial_scan(
     db.add(notification)
 
     # Save all changes in one transaction.
+    author = db.get(User, manuscript.author_id)
     db.commit()
     db.refresh(scan)
+    if scan.decision == "revision_required":
+        if author is not None:
+            notify_workflow_email(
+                "revision_requested",
+                author.email,
+                {"manuscript_id": manuscript.manuscript_id},
+            )
+    elif scan.decision == "reject":
+        if author is not None:
+            notify_workflow_email(
+                "manuscript_decision",
+                author.email,
+                {"manuscript_id": manuscript.manuscript_id, "decision": "rejected"},
+            )
 
     return {
         "scan_id": scan.scan_id,
@@ -1035,8 +1051,17 @@ def approve_initial_editing_as_editor(
     )
 
     # Step 7: Commit both the decision and notification.
+    author = db.get(User, manuscript.author_id)
     db.commit()
     db.refresh(submission)
+
+    if approval_data.decision == "request_revision":
+        if author is not None:
+            notify_workflow_email(
+                "revision_requested",
+                author.email,
+                {"manuscript_id": manuscript.manuscript_id},
+            )
 
     return {
         "submission_id": submission.submission_id,
@@ -1136,9 +1161,18 @@ def approve_initial_editing_as_eic(
         )
 
     # Step 6: Save the decision and notifications.
+    author = db.get(User, manuscript.author_id)
     db.commit()
     db.refresh(submission)
     db.refresh(manuscript)
+
+    if approval_data.decision == "request_revision":
+        if author is not None:
+            notify_workflow_email(
+                "revision_requested",
+                author.email,
+                {"manuscript_id": manuscript.manuscript_id},
+            )
 
     return {
         "submission_id": submission.submission_id,
@@ -1437,9 +1471,27 @@ def make_eic_decision(
         )
 
     # Step 10: Save everything.
+    author = db.get(User, manuscript.author_id)
     db.commit()
     db.refresh(decision)
     db.refresh(manuscript)
+
+    if author is not None:
+        if decision_data.decision == "revision_required":
+            notify_workflow_email(
+                "revision_requested",
+                author.email,
+                {"manuscript_id": manuscript.manuscript_id},
+            )
+        elif decision_data.decision in ("accept", "reject"):
+            notify_workflow_email(
+                "manuscript_decision",
+                author.email,
+                {
+                    "manuscript_id": manuscript.manuscript_id,
+                    "decision": "accepted" if decision_data.decision == "accept" else "rejected",
+                },
+            )
 
     return {
         "decision_id": decision.decision_id,

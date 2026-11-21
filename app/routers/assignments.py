@@ -32,6 +32,7 @@ from app.reviewer_invitations import invitation_status, not_declined
 from app.review_progress import review_progress
 from app.email.enqueue_mode import EnqueueMode, OutboxSchemaUnavailable, check_outbox_schema, reviewer_email_enqueue_mode
 from app.email.outbox import enqueue_reviewer_invitation
+from app.email.service import notify_workflow_email
 from app.reviewer_profiles import load_profiles
 from app.reviewer_metadata_gate import MetadataMode, MetadataAccessDenied, MetadataSchemaUnavailable, ReviewerSafeAssignmentDTO, ReviewerAssignmentDoubleDTO, reviewer_metadata_mode, reviewer_assignment_dtos
 from app.reviewer_metadata_gate import _security_context
@@ -154,10 +155,10 @@ def _review_invitation(data, current_user, db, mode, artifact_context, *, requir
         db.add(ReviewerInvitation(assignment_id=assignment.assignment_id, status='pending')); db.flush()
         if not policy['locked_at']:
             lock_mode(raw, data.manuscript_id, assignment.assignment_id, current_user.user_id, policy['revision'])
+        reviewer = db.get(User, data.reviewer_id)
         db.add(Notification(user_id=data.reviewer_id, manuscript_id=data.manuscript_id,
             notification_type='review_invitation', message='You have a reviewer invitation.', is_read=False))
         db.commit()
-        return {'assignment_id': assignment.assignment_id, 'invitation_status': 'pending'}
     except (MetadataAccessDenied, MetadataSchemaUnavailable, PolicyError, reviewer_artifact_service.ArtifactError, StorageError, ValueError):
         db.rollback()
         raise HTTPException(409, 'Reviewer invitation unavailable') from None
@@ -167,6 +168,14 @@ def _review_invitation(data, current_user, db, mode, artifact_context, *, requir
     except (sqlite3.DatabaseError, SQLAlchemyError):
         db.rollback()
         raise HTTPException(503, 'Invitation outcome unavailable; refresh before retrying') from None
+
+    if reviewer is not None:
+        notify_workflow_email(
+            "reviewer_invitation",
+            reviewer.email,
+            {"manuscript_id": manuscript.manuscript_id},
+        )
+    return {'assignment_id': assignment.assignment_id, 'invitation_status': 'pending'}
 
 
 @router.post('/additional-reviewer', status_code=201)
@@ -397,6 +406,7 @@ def _invitation_operation(data, current_user, db, enqueue_mode, *, require_split
             if manuscript.review_round != data.review_round or not split_review_status(db, manuscript)['can_invite_additional']:
                 raise HTTPException(409, 'No eligible split or an additional reviewer is already active')
         new_assignment, manuscript = _assign_reviewer(data, current_user, db, enqueue_mode, raw)
+        reviewer = db.get(User, new_assignment.reviewer_id)
     except Exception as error:
         if not _rollback_or_unknown(db):
             raise HTTPException(503, _UNKNOWN) from None
@@ -414,11 +424,18 @@ def _invitation_operation(data, current_user, db, enqueue_mode, *, require_split
     try:
         db.commit()
         db.refresh(new_assignment)
-        return assignment_to_response(db, new_assignment, manuscript)
+        response = assignment_to_response(db, new_assignment, manuscript)
     except Exception:
         logger.error('reviewer_invitation_commit_or_refresh_unknown')
         _rollback_or_unknown(db)
         raise HTTPException(503, _UNKNOWN) from None
+    if reviewer is not None:
+        notify_workflow_email(
+            "reviewer_invitation",
+            reviewer.email,
+            {"manuscript_id": manuscript.manuscript_id},
+        )
+    return response
 
 
 def _assign_reviewer(assignment_data, current_user, db, enqueue_mode, raw):
