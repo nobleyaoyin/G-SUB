@@ -108,6 +108,34 @@ class InvitationEmailIntegrationTest(unittest.TestCase):
             self.assertFalse(db.execute("SELECT 1 FROM sqlite_master WHERE name='email_outbox'").fetchone())
             self.assertFalse(db.execute("SELECT 1 FROM schema_migrations WHERE migration_id='007_email_outbox'").fetchone())
 
+    def test_direct_email_after_commit_when_outbox_disabled(self):
+        def inspect_committed(event, recipient, context):
+            self.assertEqual(len(self.rows('reviewer_invitations')), 1)
+            self.assertEqual(event, 'reviewer_invitation')
+            self.assertEqual(recipient, 'reviewer@example.com')
+            self.assertEqual(context, {'manuscript_id': self.mid})
+        with patch.object(assignments, 'notify_workflow_email', side_effect=inspect_committed) as send:
+            response = self.invite()
+        self.assertEqual(response.status_code, 201, response.text)
+        send.assert_called_once()
+
+    def test_outbox_mode_does_not_also_send_direct_email(self):
+        self.schema()
+        self.enable()
+        with patch.object(assignments, 'notify_workflow_email') as send:
+            response = self.invite()
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(len(self.rows('email_outbox')), 1)
+        send.assert_not_called()
+
+    def test_failed_commit_does_not_send_direct_email(self):
+        with patch.object(assignments.Session, 'commit', side_effect=RuntimeError('synthetic failure')), \
+             patch.object(assignments, 'notify_workflow_email') as send:
+            response = self.invite()
+        self.assertEqual(response.status_code, 503)
+        send.assert_not_called()
+        self.assert_no_new_records(with_outbox=False)
+
     def test_authorization_and_closed_unknown_mode(self):
         self.actor = SimpleNamespace(user_id=self.ids['Author'],role='author',name='Author')
         self.assertEqual(self.invite().status_code, 403)

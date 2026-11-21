@@ -116,6 +116,8 @@ export SECRET_KEY="$(.venv312/bin/python -c 'import secrets; print(secrets.token
 
 A new key invalidates tokens created with an earlier key. If local login sessions must survive restarts, store a separately generated key securely in an ignored local environment file. Never commit credentials or copy another developer's key.
 
+Workflow email is disabled unless `SMTP_HOST` is set. To enable it, configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM_EMAIL`, and optionally `SMTP_FROM_NAME`, `SMTP_USERNAME`, and `SMTP_PASSWORD` in the process environment. Username and password must be set together. `SMTP_USE_TLS=true` enables STARTTLS (the default); set it to `false` and `SMTP_USE_SSL=true` for implicit TLS, commonly on port 465. TLS and SSL cannot both be enabled. SMTP credentials must remain private and must not be committed. Workflow email is best-effort: a delivery failure is logged and does not undo a successful manuscript operation. Tests use mocks/fakes and never deliver real email.
+
 ## Database initialization
 
 **Collaboration Base Schema v1 is a newly established collaboration baseline; it is not a reconstruction of a historical pre-001 production schema.** The initializer applies the baseline, migrations 001–019 and 021–040, and atomic migration 046 to a new disposable SQLite file. Migration 046 owns the submission schema and records the identities of 041–045; do not run 041–045 before it. There is no migration 020. The clone and its database must be within the system temporary directory recognized by Python; this is not a persistent installation or upgrade procedure.
@@ -187,6 +189,20 @@ Optional Google sign-in, CAPTCHA, email delivery, ONLYOFFICE, and private
 artifact stores require their own configuration and credentials. Their real
 external services were not tested for this release. Keep those values outside
 Git and do not start or expose services without authorization.
+
+Workflow email is optional and disabled when `SMTP_HOST` is empty. To enable
+it, configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM_EMAIL`, and optionally
+`SMTP_FROM_NAME`, `SMTP_USERNAME`, and `SMTP_PASSWORD` in the process
+environment. Configure the username and password together and keep credentials
+out of Git. `SMTP_USE_TLS=true` enables STARTTLS (the default); for implicit
+SSL use `SMTP_USE_SSL=true` and `SMTP_USE_TLS=false` with the provider's SSL
+port. Both options cannot be true at once. Invalid configuration and delivery
+failures are logged without credential details and do not undo an already
+committed workflow operation. Direct SMTP does not retry failed delivery;
+when the reviewer invitation outbox is explicitly used, it owns invitation
+delivery and direct SMTP is not also invoked. Test with synthetic addresses
+and mocked SMTP, for example `pytest tests/test_workflow_email.py` within the
+isolated test environment described above.
 
 Author submission attachments require `GSUB_SUBMISSION_ATTACHMENT_ROOT` to
 name an existing absolute directory outside the project, owned by the application

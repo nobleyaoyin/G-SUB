@@ -52,6 +52,7 @@ from app.routers.users import get_current_user, require_role
 from app.reviewer_invitations import not_declined, may_review
 from app.review_progress import review_progress
 from app.participant_tasks import participant_task
+from app.email.service import notify_workflow_email
 from app.reviewer_metadata_gate import (MetadataMode, MetadataSchemaUnavailable, MetadataAccessDenied,
     ReviewerDetailDTO, ReviewerSingleBlindDetailDTO, ReviewerProgressDTO,
     reviewer_detail_policy, reviewer_metadata_mode, reviewer_metadata_dto)
@@ -725,6 +726,11 @@ def submit_draft_manuscript(
         )
     db.commit()
     db.refresh(manuscript)
+    notify_workflow_email(
+        "manuscript_submitted",
+        current_user.email,
+        {"manuscript_id": manuscript.manuscript_id},
+    )
     return manuscript_to_response(manuscript)
 
 
@@ -1760,8 +1766,26 @@ def make_editor_decision(
     db.add(notification)
 
     # Step 6: Save changes
+    author = db.get(User, manuscript.author_id)
     db.commit()
     db.refresh(manuscript)
+
+    if author is not None:
+        if manuscript.status in ("accepted", "rejected"):
+            notify_workflow_email(
+                "manuscript_decision",
+                author.email,
+                {
+                    "manuscript_id": manuscript.manuscript_id,
+                    "decision": manuscript.status,
+                },
+            )
+        elif manuscript.status == "revision_required":
+            notify_workflow_email(
+                "revision_requested",
+                author.email,
+                {"manuscript_id": manuscript.manuscript_id},
+            )
 
     # Step 7: Return result
     return {
