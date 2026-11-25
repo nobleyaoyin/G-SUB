@@ -26,6 +26,7 @@ from app.reviewer_invitations import may_review
 from app.reviewer_metadata_gate import MetadataMode, reviewer_metadata_mode, _security_context
 from app.blind_policy_store import read_policy
 from app.reviewer_artifact_read import read_reviewer_artifact
+from app.email.service import notify_workflow_email
 from app.reviewer_demo_download import DemoArtifactContext, AuthenticatedReviewerAuthority, reviewer_demo_artifact_context
 
 
@@ -262,6 +263,15 @@ def submit_review(
     # Step 11: Save review, assignment status, and notification together
     db.commit()
     db.refresh(review)
+    if recipient and recipient.role in ("editor", "eic"):
+        notify_workflow_email(
+            "review_submitted",
+            recipient.email,
+            {
+                "manuscript_id": manuscript.manuscript_id,
+                "review_round": current_round,
+            },
+        )
 
     return review
 
