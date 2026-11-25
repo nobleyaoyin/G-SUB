@@ -23,7 +23,9 @@ if IS_DEMO:
         raise RuntimeError("Demo JWT key must differ from the development key")
 else:
     load_dotenv()
-    SECRET_KEY = os.environ["SECRET_KEY"]
+    SECRET_KEY = os.environ.get("SECRET_KEY", "")
+    if not SECRET_KEY.strip() or len(SECRET_KEY.encode("utf-8")) < 32:
+        raise RuntimeError("Collaboration signing key must contain at least 32 bytes")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
@@ -41,7 +43,7 @@ def verify_password(password: str, hashed_password: str) -> bool:
 
 
 # Create a JWT access token
-def create_access_token(user_id: int) -> str:
+def create_access_token(user_id: int, *, lifecycle_generation: int | None = None) -> str:
     expire = datetime.now(timezone.utc) + timedelta(
         minutes=ACCESS_TOKEN_EXPIRE_MINUTES
     )
@@ -50,6 +52,10 @@ def create_access_token(user_id: int) -> str:
         "sub": str(user_id),
         "exp": expire
     }
+    if lifecycle_generation is not None:
+        if type(lifecycle_generation) is not int or lifecycle_generation < 1:
+            raise ValueError('Invalid lifecycle generation')
+        payload['lifecycle_generation'] = lifecycle_generation
 
     token = jwt.encode(
         payload,
@@ -58,6 +64,18 @@ def create_access_token(user_id: int) -> str:
     )
 
     return token
+
+
+def decode_lifecycle_generation(token: str, expected_user_id: int) -> int | None:
+    """Verify a generation-bound token; this alone does not authorize access."""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], options={'require': ['sub', 'exp', 'lifecycle_generation']})
+        generation = payload['lifecycle_generation']
+        if payload['sub'] != str(expected_user_id) or type(generation) is not int or generation < 1:
+            return None
+        return generation
+    except (jwt.InvalidTokenError, ValueError, TypeError, KeyError):
+        return None
 
 
 # Verify and decode a JWT access token

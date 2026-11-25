@@ -79,6 +79,11 @@ class ManuscriptResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AuthorManuscriptResponse(ManuscriptResponse):
+    # Owner-only resume information; never part of reviewer serializers.
+    submission_draft_id: str | None = None
+
+
 # Schema for updating a manuscript
 class ManuscriptUpdate(BaseModel):
     title: str | None = Field(
@@ -285,6 +290,7 @@ class PreReviewConfirmationRequest(BaseModel):
         return value
 
 class EICDecisionCreate(BaseModel):
+    expected_review_round: int | None = Field(default=None, ge=1)
     decision: Literal[
         "accept",
         "reject",

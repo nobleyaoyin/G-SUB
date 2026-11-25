@@ -42,7 +42,7 @@ describe("AI Prescreening Panel", () => {
     renderPanel();
 
     expect(await screen.findByText(/AI status:/)).toBeTruthy();
-    expect(screen.getByText("pending")).toBeTruthy();
+    expect(screen.getByText("Pending")).toBeTruthy();
   });
 
   it("shows completed findings", async () => {

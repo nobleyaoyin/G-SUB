@@ -108,6 +108,7 @@ class InitialEditingProgressAPITests(unittest.TestCase):
 
     def test_assigned_reviewer_cannot_see_steps(self):
         f = self.fixture
+        f.select_single_blind_policy()
         assigned = f.assign(f.reviewer, 1)
         self.assertEqual(assigned.status_code, 201, assigned.text)
 

@@ -140,14 +140,16 @@ def get_own_reviewer_profile(response: Response, current_user: User = Depends(re
     from app.reviewer_profiles import load_profiles, schema_available
     if not schema_available(db): raise HTTPException(503, 'Reviewer profiles unavailable')
     response.headers['Cache-Control'] = 'no-store'
-    return {'profile': load_profiles(db, [current_user.user_id]).get(current_user.user_id)}
+    return {'profile': load_profiles(db, [current_user.user_id]).get(current_user.user_id),
+            'account': {'name': current_user.name, 'email': current_user.email}}
 
 
 @router.put('/me/reviewer-profile')
 def update_own_reviewer_profile(data: ReviewerProfileInput, response: Response, current_user: User = Depends(require_role('reviewer')), db: Session = Depends(get_db)):
     from app.reviewer_profiles import save_profile
     response.headers['Cache-Control'] = 'no-store'
-    return {'profile': save_profile(db, current_user.user_id, data)}
+    profile = save_profile(db, current_user.user_id, data)
+    return {'profile': profile, 'account': {'name': current_user.name, 'email': current_user.email}}
 
 
 # Register a new user
@@ -271,7 +273,10 @@ def login_user(
                 detail="Please verify your email address before signing in.",
             )
 
-    access_token = create_access_token(user.user_id)
+    from app.lifecycle_integrity import login_generation
+    generation = login_generation(db, user)
+    access_token = (create_access_token(user.user_id, lifecycle_generation=generation)
+                    if generation is not None else create_access_token(user.user_id))
 
     return {
         "access_token": access_token,

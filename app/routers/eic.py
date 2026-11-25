@@ -4,13 +4,13 @@ import tempfile
 import sqlite3
 import hmac
 from pathlib import Path
-from app.config import DATA_ROOT, guard_demo_path
+from app.config import DATA_ROOT, MODE, guard_demo_path
 from uuid import uuid4
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Form
 from fastapi.responses import FileResponse, JSONResponse, Response
-from sqlalchemy import select, update
+from sqlalchemy import select, update, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -33,6 +33,7 @@ from app.models import (
     AuthorAgreement,
     FinalEditorInvitation,
     FinalEditingSubmissionInvitation,
+    FormattingSubmission,
 )
 
 from app.schemas import (
@@ -51,8 +52,8 @@ from app.reviewer_invitations import invitation_status, not_declined
 from app.review_progress import review_progress
 from app.ai_prescreening_read import list_manuscript_ai_reports
 from app.split_review import split_review_status
-from app.agreement_content import AGREEMENT_TEXT, AGREEMENT_VERSION
-from app.routers.final_workflow import summary_invitation, submissions as final_workflow_submissions
+from app.agreement_content import issuance_template
+from app.routers.final_workflow import accepted_current_agreement, summary_invitation, submissions as final_workflow_submissions
 from app.routers.manuscripts import OnlineTextSave, validate_manuscript_file
 from app import editor_text_drafts, online_versions
 from app import blind_policy_store
@@ -168,6 +169,8 @@ def editor_text_download(manuscript_id: int, stage: str, filename: str, current_
 
 @router.get("/initial-editing/my", summary="List my initial editing workflow items")
 def my_initial_editing(current_user: User = Depends(require_role("author", "editor")), db: Session = Depends(get_db)):
+    from app.editor_invitation_metadata import invitation_metadata
+    from app.editor_invitation_revocation import effective_status
     if current_user.role == "author":
         manuscripts = db.scalars(select(Manuscript).where(Manuscript.author_id == current_user.user_id, Manuscript.status != "draft").order_by(Manuscript.manuscript_id.desc())).all()
     else:
@@ -178,9 +181,10 @@ def my_initial_editing(current_user: User = Depends(require_role("author", "edit
         if current_user.role == "editor":
             invitation_query = invitation_query.where(InitialEditorInvitation.editor_id == current_user.user_id, InitialEditorInvitation.status.in_(["pending", "accepted"]))
         invitation = db.scalar(invitation_query.order_by(InitialEditorInvitation.invitation_id.desc()).limit(1))
+        invitation_status = effective_status(db,'initial',invitation) if invitation else None
         # A pending invitation permits its recipient to see only the invitation, not editing history.
         submissions = []
-        if current_user.role == "author" or (invitation and invitation.status == "accepted"):
+        if current_user.role == "author" or invitation_status == "accepted":
             query = select(InitialEditingSubmission).where(InitialEditingSubmission.manuscript_id == manuscript.manuscript_id)
             if current_user.role == "editor":
                 query = query.where(InitialEditingSubmission.editor_id == current_user.user_id)
@@ -192,7 +196,7 @@ def my_initial_editing(current_user: User = Depends(require_role("author", "edit
         for submission in submissions:
             confirmation = db.scalar(select(PreReviewConfirmation).where(PreReviewConfirmation.submission_id == submission.submission_id).order_by(PreReviewConfirmation.confirmation_id.desc()).limit(1))
             items.append({"submission_id": submission.submission_id, "status": submission.status, "comments": submission.comments, "author_comments": submission.author_comments, "editor_comments": submission.editor_comments, "eic_comments": submission.eic_comments, "confirmation": confirmation.decision if confirmation else None})
-        result.append({"manuscript_id": manuscript.manuscript_id, "title": manuscript.title, "status": manuscript.status, "invitation": {"invitation_id": invitation.invitation_id, "status": invitation.status, "editor": editor.name if editor else "Unknown", "invited_at": invitation.invited_at, "responded_at": invitation.responded_at} if invitation else None, "submissions": items, "invitation_abstract": manuscript.abstract if current_user.role == "editor" and invitation and invitation.status == "accepted" else None})
+        result.append({"manuscript_id": manuscript.manuscript_id, "title": manuscript.title, "status": manuscript.status, "invitation": {"invitation_id": invitation.invitation_id, "status": invitation_status, "original_status": invitation.status, "editor": editor.name if editor else "Unknown", "invited_at": invitation.invited_at, "responded_at": invitation.responded_at} if invitation else None, "submissions": items, "invitation_abstract": manuscript.abstract if current_user.role == "editor" and invitation_status == "accepted" else None, "invitation_metadata": invitation_metadata(db, manuscript) if current_user.role == "editor" and invitation and (invitation_status == "accepted" or (invitation_status == "pending" and manuscript.status == "initial_editor_invited")) else None})
     return result
 
 
@@ -233,8 +237,89 @@ def manuscript_ai_prescreening(
     }
 
 
+@router.get("/manuscripts/{manuscript_id}/document-timeline", summary="Recorded manuscript document evidence")
+def manuscript_document_timeline(manuscript_id: int, current_user: User = Depends(require_role("eic")), db: Session = Depends(get_db)):
+    manuscript = db.get(Manuscript, manuscript_id)
+    if manuscript is None or manuscript.status == 'draft':
+        raise HTTPException(status_code=404, detail='Manuscript not found')
+    from app.eic_document_timeline import document_timeline
+    return document_timeline(db, manuscript)
+
+
+@router.get("/manuscripts/{manuscript_id}/document-timeline/reviewed/{artifact_id}/download")
+def timeline_reviewed_download(manuscript_id: int, artifact_id: str, current_user: User = Depends(require_role("eic")), db: Session = Depends(get_db)):
+    manuscript = db.get(Manuscript, manuscript_id)
+    if manuscript is None or manuscript.status == 'draft':
+        raise HTTPException(status_code=404, detail='Document unavailable')
+    try:
+        exists = db.scalar(text("SELECT 1 FROM distribution_artifacts WHERE artifact_id=:artifact AND manuscript_id=:mid AND kind='reviewed_document'"), {'artifact':artifact_id,'mid':manuscript_id})
+    except SQLAlchemyError:
+        raise HTTPException(status_code=503, detail='Document unavailable') from None
+    if not exists:
+        raise HTTPException(status_code=404, detail='Document unavailable')
+    # Distribution artifacts are immutable; the existing download rechecks the
+    # stored association and verifies its digest on the bytes it returns.
+    db.rollback()
+    from app.routers.document_distribution import download_reviewed
+    return download_reviewed(artifact_id, current_user, db)
+
+
+@router.get('/manuscripts/{manuscript_id}/document-timeline/formatting/{submission_id}/download')
+def timeline_formatting_download(manuscript_id: int, submission_id: int,
+        current_user: User = Depends(require_role('eic')), db: Session = Depends(get_db)):
+    manuscript = db.get(Manuscript, manuscript_id)
+    if not manuscript or manuscript.status == 'draft':
+        raise HTTPException(404, 'Document unavailable')
+    submission = db.scalar(select(FormattingSubmission).where(
+        FormattingSubmission.submission_id == submission_id,
+        FormattingSubmission.manuscript_id == manuscript_id))
+    if not submission:
+        raise HTTPException(404, 'Document unavailable')
+    from app.formatting_artifact_read import read_formatting_artifact
+    from app.routers.manuscripts import ALLOWED_MANUSCRIPT_EXTENSIONS, MAX_MANUSCRIPT_FILE_SIZE
+    content, extension = read_formatting_artifact(submission, manuscript_id, BASE_DIR,
+        ALLOWED_MANUSCRIPT_EXTENSIONS, MAX_MANUSCRIPT_FILE_SIZE, db=db)
+    return Response(content, media_type=ALLOWED_MANUSCRIPT_EXTENSIONS[extension], headers={
+        'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff',
+        'Content-Disposition':f'attachment; filename="formatting-document{extension}"'})
+
+
+@router.get('/manuscripts/{manuscript_id}/document-timeline/submissions/{snapshot_id}/download')
+def timeline_submission_download(manuscript_id: int, snapshot_id: str,
+        current_user: User = Depends(require_role('eic')), db: Session = Depends(get_db)):
+    manuscript = db.get(Manuscript, manuscript_id)
+    if not manuscript or manuscript.status == 'draft':
+        raise HTTPException(404, 'Document unavailable')
+    from app.submission_snapshot_history import read_snapshot
+    from app.routers.manuscripts import ALLOWED_MANUSCRIPT_EXTENSIONS, MAX_MANUSCRIPT_FILE_SIZE
+    content, extension = read_snapshot(db, manuscript, snapshot_id, BASE_DIR,
+        ALLOWED_MANUSCRIPT_EXTENSIONS, MAX_MANUSCRIPT_FILE_SIZE)
+    return Response(content, media_type=ALLOWED_MANUSCRIPT_EXTENSIONS[extension], headers={
+        'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff',
+        'Content-Disposition':f'attachment; filename="submitted-document{extension}"'})
+
+
+@router.get('/manuscripts/{manuscript_id}/document-timeline/final-editing/{submission_id}/download')
+def timeline_final_editing_download(manuscript_id: int, submission_id: int,
+        current_user: User = Depends(require_role('eic')), db: Session = Depends(get_db)):
+    manuscript = db.get(Manuscript, manuscript_id)
+    if not manuscript or manuscript.status == 'draft':
+        raise HTTPException(404, 'Document unavailable')
+    submission = db.scalar(select(FinalEditingSubmission).where(
+        FinalEditingSubmission.submission_id == submission_id,
+        FinalEditingSubmission.manuscript_id == manuscript_id))
+    if submission is None:
+        raise HTTPException(404, 'Document unavailable')
+    from app.routers.manuscripts import ALLOWED_MANUSCRIPT_EXTENSIONS, read_final_history_file
+    content, extension = read_final_history_file(submission, manuscript_id, BASE_DIR, db=db)
+    return Response(content, media_type=ALLOWED_MANUSCRIPT_EXTENSIONS[extension], headers={
+        'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff',
+        'Content-Disposition':f'attachment; filename="final-edit-document{extension}"'})
+
+
 @router.get("/manuscripts/{manuscript_id}/overview", summary="EIC manuscript workflow overview")
 def manuscript_overview(manuscript_id: int, current_user: User = Depends(require_role("eic")), db: Session = Depends(get_db)):
+    from app.editor_invitation_revocation import effective_status
     manuscript = db.get(Manuscript, manuscript_id)
     # Drafts remain private, including from EICs.
     if manuscript is None or manuscript.status == "draft":
@@ -259,21 +344,35 @@ def manuscript_overview(manuscript_id: int, current_user: User = Depends(require
     finals = db.scalars(select(FinalEditingSubmission).where(FinalEditingSubmission.manuscript_id == manuscript_id).order_by(FinalEditingSubmission.submission_id)).all()
     final_invitations = db.scalars(select(FinalEditorInvitation).where(FinalEditorInvitation.manuscript_id == manuscript_id).order_by(FinalEditorInvitation.invitation_id)).all()
     agreement = db.scalar(select(AuthorAgreement).where(AuthorAgreement.manuscript_id == manuscript_id).order_by(AuthorAgreement.agreement_id.desc()).limit(1))
+    notices = db.scalars(select(Notification).where(Notification.manuscript_id == manuscript_id,
+        Notification.notification_type.in_(['manuscript_submitted', 'initial_resubmission']))
+        .order_by(Notification.created_at, Notification.notification_id)).all()
+    submissions_notices = [n for n in notices if n.notification_type == 'manuscript_submitted']
+    initial_notice = next((n for n in submissions_notices if n.created_at is not None), submissions_notices[0] if submissions_notices else None)
+    submission_events = ([{'kind': 'submitted', 'id': initial_notice.notification_id, 'created_at': initial_notice.created_at}]
+                         if initial_notice else [])
+    submission_events.extend({'kind': 'initial_resubmission', 'id': n.notification_id, 'created_at': n.created_at}
+                             for n in notices if n.notification_type == 'initial_resubmission')
+    revision_files = db.scalars(select(ReviewRoundFile).where(ReviewRoundFile.manuscript_id == manuscript_id,
+        ReviewRoundFile.source_kind == 'author_revision').order_by(ReviewRoundFile.round_file_id)).all()
     def name(user_id):
         user = db.get(User, user_id)
         return user.name if user else f"User #{user_id}"
     return {
         "manuscript": {"manuscript_id": manuscript_id, "title": manuscript.title, "abstract": manuscript.abstract, "status": manuscript.status, "review_round": manuscript.review_round, "author": author.name if author else "Unknown", "created_at": manuscript.created_at},
         "review_progress": review_progress(db, manuscript),
+        "submission_events": submission_events,
+        "revision_events": [{"round_file_id": r.round_file_id, "review_round": r.review_round,
+                             "created_at": r.created_at} for r in revision_files],
         "split_review": split_review_status(db, manuscript),
         "author_agreement": {"status": agreement.status, "agreement_version": agreement.agreement_version, "responded_at": agreement.responded_at} if agreement else None,
         "scans": [{"decision": s.decision, "comments": s.comments, "created_at": s.created_at} for s in scans],
-        "invitations": [{"invitation_id": i.invitation_id, "editor": name(i.editor_id), "status": i.status, "invited_at": i.invited_at, "responded_at": i.responded_at} for i in invitations],
+        "invitations": [{"invitation_id": i.invitation_id, "editor": name(i.editor_id), "status": effective_status(db,'initial',i), "original_status": i.status, "invited_at": i.invited_at, "responded_at": i.responded_at} for i in invitations],
         "submissions": [{"submission_id": s.submission_id, "editor": name(s.editor_id), "status": s.status, "comments": s.comments, "author_comments": s.author_comments, "editor_comments": s.editor_comments, "eic_comments": s.eic_comments, "created_at": s.created_at} for s in submissions],
         "confirmations": [{"submission_id": c.submission_id, "decision": c.decision, "comments": c.comments, "confirmed_at": c.confirmed_at} for c in confirmations],
-        "assignments": [{"assignment_id": a.assignment_id, "review_round": a.review_round, "reviewer": name(a.reviewer_id), "assigned_by": name(a.assigned_by), "status": a.status, "invitation_status": invitation_status(db, a), "recorded_round_binding": binding_by_assignment.get(a.assignment_id), "review": ({"comments": r.comments, "recommendation": r.recommendation, "submitted_at": r.submitted_at} if (r := db.scalar(select(Review).where(Review.assignment_id == a.assignment_id))) else None)} for a in assignments],
+        "assignments": [{"assignment_id": a.assignment_id, "review_round": a.review_round, "reviewer": name(a.reviewer_id), "assigned_by": name(a.assigned_by), "status": a.status, "assigned_at": a.assigned_at, "invitation_status": invitation_status(db, a), "recorded_round_binding": binding_by_assignment.get(a.assignment_id), "review": ({"comments": r.comments, "recommendation": r.recommendation, "submitted_at": r.submitted_at} if (r := db.scalar(select(Review).where(Review.assignment_id == a.assignment_id))) else None)} for a in assignments],
         "decisions": [{"review_round": d.review_round, "decision": d.decision, "comments": d.comments, "decided_at": d.decided_at} for d in decisions],
-        "final_submissions": [{"submission_id": f.submission_id, "editor": name(f.editor_id), "status": f.status, "comments": f.comments} for f in finals],
+        "final_submissions": [{"submission_id": f.submission_id, "editor": name(f.editor_id), "status": f.status, "comments": f.comments, "created_at": f.created_at} for f in finals],
         "final_invitations": [summary_invitation(db, i) for i in final_invitations],
         "final_workflow_submissions": final_workflow_submissions(db, manuscript_id),
     }
@@ -527,11 +626,12 @@ def respond_initial_editor_invitation(
     # manuscript and notification are committed together or rolled back.
     next_invitation = "accepted" if response_data.decision == "accept" else "declined"
     next_manuscript = "initial_editing" if response_data.decision == "accept" else "initial_scan_passed"
+    response_time = datetime.now(timezone.utc)
     changed = db.execute(update(InitialEditorInvitation).where(
         InitialEditorInvitation.invitation_id == invitation_id,
         InitialEditorInvitation.editor_id == current_user.user_id,
         InitialEditorInvitation.status == "pending",
-    ).values(status=next_invitation, responded_at=datetime.now(timezone.utc)))
+    ).values(status=next_invitation, responded_at=response_time))
     if changed.rowcount != 1:
         db.rollback()
         raise HTTPException(status_code=409, detail="Invitation has already been answered")
@@ -543,6 +643,19 @@ def respond_initial_editor_invitation(
         db.rollback()
         raise HTTPException(status_code=409, detail="Manuscript is not awaiting an editor response")
 
+    from app.editor_invitation_revocation import is_revoked
+    try:
+        if is_revoked(db,'initial',invitation_id):
+            raise HTTPException(status_code=409, detail="Invitation unavailable")
+    except HTTPException:
+        db.rollback()
+        raise
+
+    automatic_intent = None
+    if next_invitation == "accepted":
+        from app.automatic_distribution_intents import capture_acceptance
+        automatic_intent = capture_acceptance(db, manuscript.manuscript_id, 'initial', invitation_id, current_user.user_id, response_time)
+
     # Notify the EIC who sent the invitation.
     db.add(
         Notification(
@@ -550,14 +663,17 @@ def respond_initial_editor_invitation(
             manuscript_id=manuscript.manuscript_id,
             notification_type="initial_editor_response",
             message=(
-                f"Editor {current_user.name} has "
-                f"{invitation.status} the invitation "
+                f"Initial editor {current_user.name} has "
+                f"{next_invitation} the invitation #{invitation_id} "
                 f"for manuscript #{manuscript.manuscript_id}."
             ),
         )
     )
 
     db.commit()
+    if automatic_intent:
+        from app.automatic_distribution_intents import process_after_acceptance
+        process_after_acceptance(db, automatic_intent)
     db.refresh(invitation)
 
     return invitation
@@ -605,11 +721,24 @@ def submit_initial_editing(
         )
     )
 
-    if invitation is None:
+    from app.editor_invitation_revocation import effective_status
+    if invitation is None or effective_status(db,'initial',invitation) != 'accepted':
         raise HTTPException(
             status_code=403,
             detail="You are not the assigned initial editor",
         )
+
+    from app import sample_documents
+    sample = sample_documents.registered(db, manuscript_id)
+    if sample and expected_online_version is None:
+        connection = db.connection()
+        if connection.dialect.name != 'sqlite' or connection.connection.driver_connection.in_transaction:
+            raise HTTPException(503, 'Editor transaction unavailable')
+        connection.exec_driver_sql('BEGIN IMMEDIATE')
+        db.refresh(manuscript)
+        db.refresh(invitation)
+        if manuscript.status != 'initial_editing' or effective_status(db, 'initial', invitation) != 'accepted':
+            raise HTTPException(409, 'Initial editing assignment changed')
 
     # Step 4: Prevent multiple pending submissions.
     pending_submission = db.scalar(
@@ -644,6 +773,8 @@ def submit_initial_editing(
         )
     content = file.file.read(MAX_MANUSCRIPT_FILE_SIZE + 1)
     extension, _ = validate_manuscript_file(file.filename, content)
+    if sample and expected_online_version is not None:
+        raise HTTPException(503, 'Sample editor online drafts are not yet available')
     if expected_online_version is not None:
         if expected_online_version.startswith('docx:'):
             from app.routers.onlyoffice import selected_draft
@@ -659,55 +790,45 @@ def submit_initial_editing(
             db.rollback()
             raise HTTPException(409, 'Selected online draft changed; reopen and select it again')
 
-    # Step 7: Save the edited PDF separately from the original.
-    upload_dir = guard_demo_path(
-        BASE_DIR / "uploads" / "initial_editing" / str(manuscript_id)
-    )
-    upload_dir.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now(timezone.utc).strftime(
-        "%Y%m%dT%H%M%S%fZ"
-    )
-    filename = (
-        f"editor_{current_user.user_id}_"
-        f"{timestamp}_{uuid4().hex[:8]}{extension}"
-    )
-    file_path = upload_dir / filename
-
-    temp_path = None
-
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=upload_dir,
-            suffix=".tmp",
-            delete=False,
-        ) as temp_file:
-            temp_path = Path(temp_file.name)
-            temp_file.write(content)
-
-        os.link(temp_path, file_path)
-        temp_path.unlink()
-
-    except OSError:
-        if temp_path is not None:
-            temp_path.unlink(missing_ok=True)
-
-        raise HTTPException(
-            status_code=500,
-            detail="Could not save edited document",
-        )
+    # Sample and legacy objects have distinct roots and durable identities.
+    artifact = None
+    if sample:
+        from app import sample_initial_editing
+        artifact = sample_initial_editing.write(db, manuscript_id, extension, content)
+        filename = artifact['version'] + extension
+        stored_path = artifact['identity']
+    else:
+        upload_dir = guard_demo_path(BASE_DIR / "uploads" / "initial_editing" / str(manuscript_id))
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        filename = f"editor_{current_user.user_id}_{timestamp}_{uuid4().hex[:8]}{extension}"
+        file_path = upload_dir / filename
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="wb", dir=upload_dir, suffix=".tmp", delete=False) as temp_file:
+                temp_path = Path(temp_file.name)
+                temp_file.write(content)
+            os.link(temp_path, file_path)
+            temp_path.unlink()
+        except OSError:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail="Could not save edited document")
+        stored_path = str(file_path.relative_to(BASE_DIR))
 
     # Step 8: Create an editing submission record.
     submission = InitialEditingSubmission(
         manuscript_id=manuscript_id,
         editor_id=current_user.user_id,
-        file_path=str(file_path.relative_to(BASE_DIR)),
+        file_path=stored_path,
         comments=comments,
         status="pending_author",
     )
 
     db.add(submission)
+    if sample:
+        db.flush()
+        sample_initial_editing.bind(db, submission, artifact)
 
     # Step 9: Notify the author.
     db.add(
@@ -739,7 +860,8 @@ def submit_initial_editing(
         "manuscript_id": manuscript_id,
         "editor_id": current_user.user_id,
         "filename": filename,
-        "file_path": submission.file_path,
+        **({} if sample else {"file_path": submission.file_path}),
+        **({"version_id": artifact['version']} if sample else {}),
         "comments": submission.comments,
         "status": submission.status,
         "created_at": submission.created_at,
@@ -799,6 +921,23 @@ def download_initial_editing_pdf(
             status_code=403,
             detail="You cannot access this editing submission",
         )
+
+    from app import sample_documents
+    if sample_documents.registered(db, manuscript.manuscript_id):
+        if is_editor:
+            invitation = db.scalar(select(InitialEditorInvitation).where(
+                InitialEditorInvitation.manuscript_id == manuscript.manuscript_id,
+                InitialEditorInvitation.editor_id == current_user.user_id,
+                InitialEditorInvitation.status == 'accepted'))
+            from app.editor_invitation_revocation import effective_status
+            if invitation is None or effective_status(db, 'initial', invitation) != 'accepted':
+                raise HTTPException(403, 'Document unavailable')
+        from app import sample_initial_editing
+        from app.routers.manuscripts import ALLOWED_MANUSCRIPT_EXTENSIONS
+        row, content = sample_initial_editing.read(db, submission)
+        return Response(content, media_type=ALLOWED_MANUSCRIPT_EXTENSIONS['.' + row['file_format']],
+                        headers={'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff',
+                                 'Content-Disposition':f'attachment; filename="initial-editing.{row["file_format"]}"'})
 
     # Step 4: Resolve the stored PDF path safely.
     upload_root = guard_demo_path(
@@ -974,8 +1113,10 @@ def approve_initial_editing_as_editor(
         )
     )
 
+    from app.editor_invitation_revocation import effective_status
     if (
         invitation is None
+        or effective_status(db,'initial',invitation) != 'accepted'
         or submission.editor_id != current_user.user_id
     ):
         raise HTTPException(
@@ -1215,23 +1356,22 @@ def confirm_pre_review_version(
 
     # Validate the exact approved submission, never the manuscript's latest file.
     from app.routers.manuscripts import MAX_MANUSCRIPT_FILE_SIZE, validate_manuscript_file
-    upload_root = guard_demo_path(BASE_DIR / "uploads" / "initial_editing" / str(manuscript.manuscript_id)).resolve()
-    pdf_path = guard_demo_path(BASE_DIR / submission.file_path).resolve()
-
-    if (
-        not pdf_path.is_relative_to(upload_root)
-        or not pdf_path.is_file()
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="Approved document is missing or has an invalid path",
-        )
-
-    try:
-        with pdf_path.open("rb") as document:
-            validate_manuscript_file(pdf_path.name, document.read(MAX_MANUSCRIPT_FILE_SIZE + 1), historical=True)
-    except (OSError, HTTPException):
-        raise HTTPException(status_code=409, detail="Approved document is unavailable or invalid") from None
+    from app import sample_documents
+    sample = sample_documents.registered(db, manuscript.manuscript_id)
+    if sample:
+        from app import sample_initial_editing
+        artifact, content = sample_initial_editing.read(db, submission)
+        validate_manuscript_file('editing.' + artifact['file_format'], content, historical=True)
+    else:
+        upload_root = guard_demo_path(BASE_DIR / "uploads" / "initial_editing" / str(manuscript.manuscript_id)).resolve()
+        pdf_path = guard_demo_path(BASE_DIR / submission.file_path).resolve()
+        if not pdf_path.is_relative_to(upload_root) or not pdf_path.is_file():
+            raise HTTPException(status_code=409, detail="Approved document is missing or has an invalid path")
+        try:
+            with pdf_path.open("rb") as document:
+                validate_manuscript_file(pdf_path.name, document.read(MAX_MANUSCRIPT_FILE_SIZE + 1), historical=True)
+        except (OSError, HTTPException):
+            raise HTTPException(status_code=409, detail="Approved document is unavailable or invalid") from None
 
     # Step 6: Record Alice's decision and the PDF version.
     confirmation = PreReviewConfirmation(
@@ -1285,7 +1425,7 @@ def confirm_pre_review_version(
         "author_id": confirmation.author_id,
         "decision": confirmation.decision,
         "comments": confirmation.comments,
-        "file_path": confirmation.file_path,
+        **({} if sample else {"file_path": confirmation.file_path}),
         "confirmed_at": confirmation.confirmed_at,
         "manuscript_status": manuscript.status,
         "message": "Pre-review confirmation submitted successfully",
@@ -1322,6 +1462,10 @@ def make_eic_decision(
         )
 
     current_round = manuscript.review_round
+
+    if (decision_data.expected_review_round is not None
+            and decision_data.expected_review_round != current_round):
+        raise HTTPException(status_code=409, detail="Review round changed; refresh before deciding")
 
     progress = review_progress(db, manuscript, current_round)
     if not progress['can_decide']:
@@ -1370,6 +1514,29 @@ def make_eic_decision(
             detail="An EIC decision already exists for this review round",
         )
 
+    template = None
+    if decision_data.decision == 'accept':
+        try:
+            template = issuance_template(MODE)
+        except RuntimeError:
+            raise HTTPException(status_code=503, detail='Approved author agreement template is unavailable') from None
+        from importlib import import_module
+        guards = import_module('migrations.034_agreement_snapshot_guards')
+        try:
+            conn = db.connection()
+            if conn.dialect.name != 'sqlite': raise RuntimeError('Agreement guards unavailable')
+            raw = conn.connection.driver_connection
+            installed = raw.execute('SELECT 1 FROM schema_migrations WHERE migration_id=?',(guards.MIGRATION_ID,)).fetchone()
+            present = any(raw.execute('SELECT 1 FROM sqlite_master WHERE name=?',(name,)).fetchone() for name in guards.DDL)
+            if template.approval_status == 'approved' or installed or present:
+                if not installed: raise RuntimeError('Agreement guards unavailable')
+                for name, sql in guards.DDL.items():
+                    row = raw.execute('SELECT sql FROM sqlite_master WHERE name=?',(name,)).fetchone()
+                    if not row or not row[0] or guards.normalize(row[0]) != guards.normalize(sql):
+                        raise RuntimeError('Agreement guards unavailable')
+        except Exception:
+            raise HTTPException(status_code=503, detail='Agreement snapshot protection is unavailable') from None
+
     # Step 6: Map the decision to the next workflow status.
     status_map = {
         "accept": "awaiting_author_agreement",
@@ -1392,8 +1559,8 @@ def make_eic_decision(
     if decision_data.decision == "accept":
         db.flush()
         db.add(AuthorAgreement(manuscript_id=manuscript_id, decision_id=decision.decision_id,
-                               author_id=manuscript.author_id, agreement_version=AGREEMENT_VERSION,
-                               agreement_text=AGREEMENT_TEXT, status="pending"))
+                               author_id=manuscript.author_id, agreement_version=template.version,
+                               agreement_text=template.text, status="pending"))
 
     # Step 8: Notify the author.
     db.add(
@@ -1489,7 +1656,10 @@ def submit_final_editing(
 
     # Existing final-editing manuscripts without an agreement retain legacy behavior.
     agreement = db.scalar(select(AuthorAgreement).where(AuthorAgreement.manuscript_id == manuscript_id).order_by(AuthorAgreement.agreement_id.desc()).limit(1))
-    if agreement is not None and agreement.status != "accepted":
+    if agreement is None and db.scalar(select(FinalEditorInvitation.invitation_id).where(
+            FinalEditorInvitation.manuscript_id == manuscript_id).limit(1)) is not None:
+        raise HTTPException(status_code=409, detail="Author agreement acceptance is required before final editing")
+    if agreement is not None and not accepted_current_agreement(db, manuscript):
         raise HTTPException(status_code=409, detail="Author agreement acceptance is required before final editing")
 
     # New agreements require an accepted final-editor invitation; historical
@@ -1499,7 +1669,8 @@ def submit_final_editing(
         final_invitation = db.scalar(select(FinalEditorInvitation).where(
             FinalEditorInvitation.manuscript_id == manuscript_id,
             FinalEditorInvitation.status == 'accepted'))
-        if final_invitation is None or final_invitation.editor_id != current_user.user_id:
+        from app.editor_invitation_revocation import effective_status
+        if final_invitation is None or final_invitation.editor_id != current_user.user_id or effective_status(db,'final',final_invitation) != 'accepted':
             raise HTTPException(status_code=403, detail='Only the accepted final editor may submit')
         latest = db.scalar(select(FinalEditingSubmission).join(FinalEditingSubmissionInvitation,
             FinalEditingSubmissionInvitation.submission_id == FinalEditingSubmission.submission_id).where(
@@ -1515,6 +1686,22 @@ def submit_final_editing(
         )
         if editor_assignment is None:
             raise HTTPException(status_code=403, detail="You are not an assigned editor for this manuscript")
+
+    from app import sample_documents
+    sample = sample_documents.registered(db, manuscript_id)
+    if sample:
+        if final_invitation is None or expected_online_version is not None:
+            raise HTTPException(503, 'Sample final editing requires an accepted assignment and uploaded artifact')
+        connection = db.connection()
+        if connection.dialect.name != 'sqlite' or connection.connection.driver_connection.in_transaction:
+            raise HTTPException(503, 'Editor transaction unavailable')
+        connection.exec_driver_sql('BEGIN IMMEDIATE')
+        db.refresh(manuscript); db.refresh(final_invitation)
+        from app.editor_invitation_revocation import effective_status
+        if (manuscript.status != 'final_editing' or not accepted_current_agreement(db, manuscript)
+                or final_invitation.editor_id != current_user.user_id
+                or effective_status(db, 'final', final_invitation) != 'accepted'):
+            raise HTTPException(409, 'Final editing assignment changed')
 
     # Step 4: Prevent multiple pending submissions.
     pending_submission = db.scalar(
@@ -1567,50 +1754,33 @@ def submit_final_editing(
             db.rollback()
             raise HTTPException(409, 'Selected online draft changed; reopen and select it again')
 
-    # Step 7: Save final edited PDF.
-    upload_dir = guard_demo_path(
-        BASE_DIR / "uploads" / "final_editing" / str(manuscript_id)
-    )
-    upload_dir.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now(timezone.utc).strftime(
-        "%Y%m%dT%H%M%S%fZ"
-    )
-    filename = (
-        f"editor_{current_user.user_id}_"
-        f"{timestamp}_{uuid4().hex[:8]}{extension}"
-    )
-    file_path = upload_dir / filename
-
-    temp_path = None
-
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=upload_dir,
-            suffix=".tmp",
-            delete=False,
-        ) as temp_file:
-            temp_path = Path(temp_file.name)
-            temp_file.write(content)
-
-        os.link(temp_path, file_path)
-        temp_path.unlink()
-
-    except OSError:
-        if temp_path is not None:
-            temp_path.unlink(missing_ok=True)
-
-        raise HTTPException(
-            status_code=500,
-            detail="Could not save final edited document",
-        )
+    artifact = None
+    if sample:
+        from app import sample_stage_artifacts
+        artifact = sample_stage_artifacts.write(db, 'final_editing', manuscript_id, extension, content)
+        filename = artifact['version'] + extension
+        stored_path = artifact['identity']
+    else:
+        upload_dir = guard_demo_path(BASE_DIR / "uploads" / "final_editing" / str(manuscript_id))
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        filename = f"editor_{current_user.user_id}_{timestamp}_{uuid4().hex[:8]}{extension}"
+        file_path = upload_dir / filename
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="wb", dir=upload_dir, suffix=".tmp", delete=False) as temp_file:
+                temp_path = Path(temp_file.name); temp_file.write(content)
+            os.link(temp_path, file_path); temp_path.unlink()
+        except OSError:
+            if temp_path is not None: temp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail="Could not save final edited document")
+        stored_path = str(file_path.relative_to(BASE_DIR))
 
     # Step 8: Create final editing record.
     submission = FinalEditingSubmission(
         manuscript_id=manuscript_id,
         editor_id=current_user.user_id,
-        file_path=str(file_path.relative_to(BASE_DIR)),
+        file_path=stored_path,
         comments=comments,
         status="pending_eic" if final_invitation else "pending_author",
     )
@@ -1636,6 +1806,9 @@ def submit_final_editing(
         db.flush()
         if final_invitation:
             db.add(FinalEditingSubmissionInvitation(submission_id=submission.submission_id, invitation_id=final_invitation.invitation_id))
+        if sample:
+            db.flush()
+            sample_stage_artifacts.bind(db, submission, current_user.user_id, artifact)
         db.commit()
         db.refresh(submission)
 
@@ -1650,7 +1823,8 @@ def submit_final_editing(
         "manuscript_id": manuscript_id,
         "editor_id": current_user.user_id,
         "filename": filename,
-        "file_path": submission.file_path,
+        **({} if sample else {"file_path": submission.file_path}),
+        **({"version_id": artifact['version']} if sample else {}),
         "comments": submission.comments,
         "status": submission.status,
         "created_at": submission.created_at,
@@ -1710,6 +1884,24 @@ def download_final_editing_pdf(
             status_code=403,
             detail="You cannot access this final editing submission",
         )
+
+    from app import sample_documents
+    if sample_documents.registered(db, manuscript.manuscript_id):
+        if is_editor:
+            invitation = db.scalar(select(FinalEditorInvitation).join(FinalEditingSubmissionInvitation,
+                FinalEditingSubmissionInvitation.invitation_id == FinalEditorInvitation.invitation_id).where(
+                FinalEditingSubmissionInvitation.submission_id == submission_id,
+                FinalEditorInvitation.manuscript_id == manuscript.manuscript_id,
+                FinalEditorInvitation.editor_id == current_user.user_id))
+            from app.editor_invitation_revocation import effective_status
+            if invitation is None or effective_status(db, 'final', invitation) != 'accepted':
+                raise HTTPException(403, 'Document unavailable')
+        from app import sample_stage_artifacts
+        from app.routers.manuscripts import ALLOWED_MANUSCRIPT_EXTENSIONS
+        row, content = sample_stage_artifacts.read(db, 'final_editing', submission)
+        return Response(content, media_type=ALLOWED_MANUSCRIPT_EXTENSIONS['.' + row['file_format']],
+                        headers={'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff',
+                                 'Content-Disposition':f'attachment; filename="final-editing.{row["file_format"]}"'})
 
     # Step 4: Resolve the PDF path safely.
     upload_root = guard_demo_path(

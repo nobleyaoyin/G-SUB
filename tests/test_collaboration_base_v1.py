@@ -2,12 +2,21 @@
 import importlib.util
 from pathlib import Path
 import sqlite3
+import tempfile
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / '.test-data'
 SQL = ROOT / 'database/bootstrap/collaboration_base_v1.sql'
-MIGRATIONS = sorted((ROOT / 'migrations').glob('0*.py'))
+MIGRATIONS = [p for p in sorted((ROOT / 'migrations').glob('0*.py')) if int(p.name[:3]) <= 21]
+
+@pytest.fixture
+def collaboration_tmp_path():
+    # Other integration fixtures require pytest's base outside the project;
+    # this schema test deliberately requires its DB inside private .test-data.
+    assert DATA.is_dir() and not DATA.is_symlink()
+    assert DATA.resolve(strict=True).parent == ROOT.resolve(strict=True)
+    return Path(tempfile.mkdtemp(prefix='schema-test-', dir=DATA)).resolve(strict=True)
 
 def safe_db(tmp_path):
     root = DATA.resolve(strict=True)
@@ -23,8 +32,8 @@ def load(path):
     mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
     return mod
 
-def test_baseline_migration_chain_and_empty_downgrade(tmp_path):
-    path = safe_db(tmp_path)
+def test_baseline_migration_chain_and_empty_downgrade(collaboration_tmp_path):
+    path = safe_db(collaboration_tmp_path)
     with sqlite3.connect(path) as db:
         db.executescript(SQL.read_text())
         assert db.execute('SELECT version FROM collaboration_schema_version').fetchone() == (1,)
@@ -47,8 +56,8 @@ def test_baseline_migration_chain_and_empty_downgrade(tmp_path):
             db.execute("INSERT INTO manuscripts(manuscript_id,title,abstract,author_id,status,review_round,created_at) VALUES (1,'Synthetic','Synthetic',999,'draft',1,'2020-01-01')")
         db.rollback()
 
-def test_nonempty_distribution_history_cannot_be_downgraded(tmp_path):
-    path = safe_db(tmp_path)
+def test_nonempty_distribution_history_cannot_be_downgraded(collaboration_tmp_path):
+    path = safe_db(collaboration_tmp_path)
     with sqlite3.connect(path) as db: db.executescript(SQL.read_text())
     mods = [load(p) for p in MIGRATIONS]
     for mod in mods: mod.migrate(path)

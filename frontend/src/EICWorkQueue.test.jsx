@@ -14,10 +14,20 @@ it('opens only the selected manuscript and does not assert unverified decision r
   const open = vi.fn();
   render(<EICWorkQueue items={[item(1,'eic_decision_pending'),item(2,'submitted'),item(3,'submitted'),item(4,'submitted')]} state="ready" onOpen={open} unread={{state:'ready',count:2}} onOpenNotifications={vi.fn()} />);
   expect(screen.getByText(/No decision-ready count is inferred/)).toBeTruthy();
-  expect(screen.getByText('1 more in Manuscripts.')).toBeTruthy();
+  expect(screen.getByRole('button',{name:'Open Paper 4 (manuscript 4) from work queue'})).toBeTruthy();
   expect(screen.getByText('2 unread')).toBeTruthy();
   fireEvent.click(screen.getByRole('button',{name:'Open Paper 2 (manuscript 2) from work queue'}));
   expect(open).toHaveBeenCalledOnce(); expect(open).toHaveBeenCalledWith(2);
+});
+
+it('expands groups and opens recent user notifications without marking them read', () => {
+  const open=vi.fn(), bell=vi.fn();
+  render(<EICWorkQueue items={[item(1,'submitted')]} state="ready" onOpen={open} onOpenNotifications={bell} unread={{state:'ready',count:1,recent:[{notification_id:1,manuscript_id:1,message:'Synthetic update',is_read:false},{notification_id:2,message:'Account alert',is_read:true}]}} />);
+  const group=screen.getByText('Screening (1)').closest('details');
+  expect(group.open).toBe(true); fireEvent.click(screen.getByText('Screening (1)')); expect(group.open).toBe(false);
+  expect(screen.getByText('Unread:')).toBeTruthy(); expect(screen.getByText('Read:')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Synthetic update'})); expect(open).toHaveBeenCalledWith(1);
+  fireEvent.click(screen.getByRole('button',{name:'Account alert'})); expect(bell).toHaveBeenCalledOnce();
 });
 
 it('distinguishes loading, failure, empty and notification failure', () => {

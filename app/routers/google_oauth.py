@@ -118,4 +118,8 @@ def exchange(request: Request, response: Response, db: Session = Depends(get_db)
         db.rollback(); raise HTTPException(401,'Google sign-in expired')
     db.commit()
     response.delete_cookie(RESULT_COOKIE,path='/'); response.headers['Cache-Control']='no-store'
-    return {'access_token':create_access_token(row[0]),'token_type':'bearer'}
+    from app.lifecycle_integrity import login_generation
+    user = db.get(User, row[0])
+    generation = login_generation(db, user) if user is not None else None
+    token = create_access_token(row[0], lifecycle_generation=generation) if generation is not None else create_access_token(row[0])
+    return {'access_token':token,'token_type':'bearer'}

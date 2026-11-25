@@ -1,7 +1,10 @@
 
 from typing import Annotated
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from pydantic import BaseModel, ConfigDict
+from datetime import datetime
+from sqlalchemy import inspect, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import (
@@ -11,6 +14,7 @@ from app.models import (
     ReviewAssignment,
     Notification,
     InitialEditorInvitation,
+    ReviewerInvitationInvalidation,
 )
 from app.schemas import (
     ReviewCreate,
@@ -22,13 +26,77 @@ from app.reviewer_invitations import may_review
 from app.reviewer_metadata_gate import MetadataMode, reviewer_metadata_mode, _security_context
 from app.blind_policy_store import read_policy
 from app.reviewer_artifact_read import read_reviewer_artifact
-from app.main_reviewer_context import ReviewerArtifactContext, AuthenticatedReviewerAuthority, reviewer_artifact_context
+from app.reviewer_demo_download import DemoArtifactContext, AuthenticatedReviewerAuthority, reviewer_demo_artifact_context
 
 
 router = APIRouter(
     prefix="/reviews",
     tags=["Reviews"]
 )
+
+
+class OwnReviewResponse(BaseModel):
+    """The minimum reviewer-owned review projection; never include identities."""
+    model_config = ConfigDict(extra='forbid')
+    assignment_id: int
+    manuscript_id: int
+    review_round: int
+    comments: str
+    recommendation: str
+    submitted_at: datetime
+
+
+@router.get('/my/manuscripts/{manuscript_id}/rounds/{review_round}/assignments/{assignment_id}',
+            response_model=OwnReviewResponse)
+def own_submitted_review(manuscript_id: int, review_round: int, assignment_id: int,
+                         response: Response,
+                         current_user: User = Depends(require_role('reviewer')),
+                         db: Session = Depends(get_db),
+                         metadata_mode: MetadataMode = Depends(reviewer_metadata_mode)):
+    """Read only the authenticated reviewer's completed, non-revoked assignment."""
+    headers = {'Cache-Control': 'no-store', 'Pragma': 'no-cache'}
+    response.headers.update(headers)
+    unavailable = lambda: HTTPException(404, 'Review unavailable', headers=headers)
+    try:
+        conn = db.connection()
+        if conn.dialect.name != 'sqlite':
+            raise HTTPException(503, 'Review unavailable', headers=headers)
+        raw = conn.connection.driver_connection
+        if not raw.in_transaction:
+            conn.exec_driver_sql('BEGIN')
+        assignment = db.get(ReviewAssignment, assignment_id)
+        if (not assignment or assignment.reviewer_id != current_user.user_id
+                or assignment.manuscript_id != manuscript_id or assignment.review_round != review_round
+                or review_round < 1 or assignment.status != 'completed' or not may_review(db, assignment)):
+            raise unavailable()
+        manuscript = db.get(Manuscript, manuscript_id)
+        if not manuscript or manuscript.status == 'draft' or not manuscript.review_round or review_round > manuscript.review_round:
+            raise unavailable()
+        if inspect(conn).has_table('reviewer_invitation_invalidations'):
+            if db.scalar(select(ReviewerInvitationInvalidation.invalidation_id).where(
+                    ReviewerInvitationInvalidation.assignment_id == assignment_id).limit(1)):
+                raise unavailable()
+        elif inspect(conn).has_table('schema_migrations') and conn.execute(text(
+                "SELECT 1 FROM schema_migrations WHERE migration_id='009_account_invitation_lifecycle'"
+        )).first():
+            raise HTTPException(503, 'Review unavailable', headers=headers)
+        if metadata_mode is MetadataMode.EXPERIMENTAL:
+            from app.reviewer_metadata_gate import reviewer_assignment_dtos, MetadataAccessDenied, MetadataSchemaUnavailable
+            try:
+                if not any(item['assignment_id'] == assignment_id for item in reviewer_assignment_dtos(raw, current_user.user_id)):
+                    raise unavailable()
+            except (MetadataAccessDenied, MetadataSchemaUnavailable):
+                raise unavailable()
+        elif metadata_mode is not MetadataMode.DISABLED:
+            raise HTTPException(503, 'Review unavailable', headers=headers)
+        review = db.scalar(select(Review).where(Review.assignment_id == assignment_id))
+        if not review:
+            raise unavailable()
+        return OwnReviewResponse(assignment_id=assignment_id, manuscript_id=manuscript_id,
+                                 review_round=review_round, comments=review.comments,
+                                 recommendation=review.recommendation, submitted_at=review.submitted_at)
+    except SQLAlchemyError:
+        raise HTTPException(503, 'Review unavailable', headers=headers) from None
 
 
 # Reviewer: Submit a review
@@ -45,8 +113,24 @@ def submit_review(
     ],
     db: Session = Depends(get_db),
     metadata_mode: MetadataMode = Depends(reviewer_metadata_mode),
-    artifact_context: ReviewerArtifactContext | None = Depends(reviewer_artifact_context),
+    artifact_context: DemoArtifactContext | None = Depends(reviewer_demo_artifact_context),
 ):
+    # Serialize authorization and review creation against invalidation writes.
+    # SQLite otherwise permits a writer to invalidate the assignment after our
+    # read but before this transaction performs its first write.
+    try:
+        connection = db.connection()
+        if connection.dialect.name != 'sqlite':
+            raise HTTPException(503, 'Review unavailable')
+        if connection.connection.driver_connection.in_transaction:
+            # Upgrade an existing transaction to a writer without changing rows.
+            # A stale read snapshot cannot be upgraded and therefore fails closed.
+            connection.exec_driver_sql('UPDATE review_assignments SET status = status WHERE 0')
+        else:
+            connection.exec_driver_sql('BEGIN IMMEDIATE')
+    except SQLAlchemyError:
+        raise HTTPException(503, 'Review unavailable') from None
+
     # Step 1: Find the review assignment
     assignment = db.scalar(
         select(ReviewAssignment).where(
@@ -66,6 +150,22 @@ def submit_review(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only review your assigned manuscripts"
         )
+
+    # Existing invalidations apply to accepted assignments as well as pending
+    # invitations. They do not authorize creating any new revocation policy.
+    try:
+        conn = db.connection()
+        schema = inspect(conn)
+        if schema.has_table('reviewer_invitation_invalidations'):
+            if db.scalar(select(ReviewerInvitationInvalidation.invalidation_id).where(
+                    ReviewerInvitationInvalidation.assignment_id == assignment.assignment_id).limit(1)):
+                raise HTTPException(409, 'Review unavailable')
+        elif schema.has_table('schema_migrations') and conn.execute(text(
+                "SELECT 1 FROM schema_migrations WHERE migration_id='009_account_invitation_lifecycle'"
+        )).first():
+            raise HTTPException(503, 'Review unavailable')
+    except SQLAlchemyError:
+        raise HTTPException(503, 'Review unavailable') from None
 
     if not may_review(db, assignment):
         raise HTTPException(status_code=403, detail="Accept the review invitation before submitting a review")
@@ -113,7 +213,7 @@ def submit_review(
             policy = read_policy(raw, manuscript.manuscript_id)
             if not row or not policy or not policy['locked_at']: raise ValueError('Unavailable')
             if policy['mode'] == 'double_blind':
-                if type(artifact_context) is not ReviewerArtifactContext: raise ValueError('Unavailable')
+                if type(artifact_context) is not DemoArtifactContext: raise ValueError('Unavailable')
                 read_reviewer_artifact(raw, current_user, AuthenticatedReviewerAuthority(current_user),
                     artifact_context.proof, artifact_context.provenance, artifact_context.storage, assignment.assignment_id)
             elif policy['mode'] != 'single_blind': raise ValueError('Unavailable')

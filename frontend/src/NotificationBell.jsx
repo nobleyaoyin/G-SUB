@@ -1,10 +1,19 @@
+import {notificationTitle} from './notificationTitle';
+import {recordedMessage} from './recordedDisplay';
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import "./NotificationBell.css";
 
 import { API_URL } from "./api";
 
-function NotificationBell({ token, onNavigate, onUnreadSummary }) {
+function notificationDate(value) {
+  if (typeof value !== 'string' || !value) return 'Date unavailable';
+  const timestamp = /(?:Z|[+-]\d\d:\d\d)$/.test(value) ? value : `${value}Z`;
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? 'Date unavailable' : date.toLocaleString();
+}
+
+function NotificationBell({ token, onNavigate, onUnreadSummary, align = "end", onViewAll, onAuthorSnapshot }) {
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [isOpen, setIsOpen] = useState(false);
@@ -18,6 +27,7 @@ function NotificationBell({ token, onNavigate, onUnreadSummary }) {
   const badgeId = useId();
   const panelId = useId();
   const bellRef = useRef(null);
+  const containerRef = useRef(null);
   if (tokenRef.current !== token) {
     tokenRef.current = token;
     tokenEpoch.current += 1;
@@ -58,6 +68,7 @@ function NotificationBell({ token, onNavigate, onUnreadSummary }) {
       ]);
 
       if (version !== requestVersion.current || tokenRef.current !== token) return;
+      if (!Array.isArray(items)) throw new Error('Invalid notification response');
       if (!Number.isSafeInteger(count.unread_count) || count.unread_count < 0) throw new Error('Invalid notification count');
       setNotifications(items);
       setUnreadCount(count.unread_count);
@@ -85,8 +96,8 @@ function NotificationBell({ token, onNavigate, onUnreadSummary }) {
 
   useEffect(() => {
     if (!onUnreadSummary) return;
-    onUnreadSummary({token, state: !currentUser ? 'loading' : error ? 'error' : summaryLoaded ? 'ready' : 'loading', count: currentUser && !error && summaryLoaded ? unreadCount : null});
-  }, [onUnreadSummary, token, currentUser, error, summaryLoaded, unreadCount]);
+    onUnreadSummary({token, state: !currentUser ? 'loading' : error ? 'error' : summaryLoaded ? 'ready' : 'loading', count: currentUser && !error && summaryLoaded ? unreadCount : null, recent: currentUser && !error && summaryLoaded ? notifications.slice(0, 3) : []});
+  }, [onUnreadSummary, token, currentUser, error, summaryLoaded, unreadCount, notifications]);
 
 
   useEffect(() => {
@@ -102,6 +113,13 @@ function NotificationBell({ token, onNavigate, onUnreadSummary }) {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [isOpen, currentUser]);
 
+  useEffect(() => {
+    if (!isOpen || !onViewAll) return undefined;
+    const close = event => { if (!containerRef.current?.contains(event.target)) setIsOpen(false); };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [isOpen, onViewAll]);
+
   const handleToggle = async () => {
     if (isOpen) { setIsOpen(false); return; }
     const epoch = tokenEpoch.current;
@@ -111,7 +129,7 @@ function NotificationBell({ token, onNavigate, onUnreadSummary }) {
     if (tokenRef.current === token && tokenEpoch.current === epoch) setLoading(false);
   };
 
-  const handleMarkAsRead = async (notificationId) => {
+  const handleMarkAsRead = useCallback(async (notificationId) => {
     const epoch = tokenEpoch.current;
     try {
       await apiRequest(
@@ -119,11 +137,19 @@ function NotificationBell({ token, onNavigate, onUnreadSummary }) {
         { method: "PATCH" }
       );
 
-      if (tokenEpoch.current === epoch) await loadNotifications();
+      if (tokenEpoch.current === epoch) { await loadNotifications(); return true; }
+      return false;
     } catch (err) {
       if (tokenRef.current === token && tokenEpoch.current === epoch) setError(err.message || "Failed to update notification");
+      return false;
     }
-  };
+  }, [apiRequest, loadNotifications, token]);
+
+  useEffect(() => {
+    onAuthorSnapshot?.({token, items: currentUser && summaryLoaded && !error ? notifications : [],
+      state: !currentUser || (!summaryLoaded && !error) ? 'loading' : error ? 'error' : 'ready',
+      error, markRead: handleMarkAsRead, refresh: loadNotifications});
+  }, [onAuthorSnapshot, token, currentUser, summaryLoaded, error, notifications, handleMarkAsRead, loadNotifications]);
 
   const handleNavigate = (notification) => {
     if (!notification.manuscript_id || !onNavigate) {
@@ -135,7 +161,7 @@ function NotificationBell({ token, onNavigate, onUnreadSummary }) {
   };
 
   return (
-    <div className="notification-container">
+    <div ref={containerRef} className={`notification-container${align === "start" ? " notification-container-start" : ""}`}>
       <button
         type="button"
         className="notification-bell"
@@ -181,7 +207,7 @@ function NotificationBell({ token, onNavigate, onUnreadSummary }) {
           )}
 
           {!loading && !error &&
-            notifications.map((notification) => (
+            (onViewAll ? notifications.slice(0, 5) : notifications).map((notification) => (
               <div
                 key={notification.notification_id}
                 className={
@@ -191,22 +217,18 @@ function NotificationBell({ token, onNavigate, onUnreadSummary }) {
                 }
               >
 
+                {onViewAll && <strong className="notification-kind">{notificationTitle(notification.notification_type)}</strong>}
+
                 <button
                   type="button"
                   className="notification-link"
                   onClick={() => handleNavigate(notification)}
                   disabled={!notification.manuscript_id || !onNavigate}
                 >
-                  {notification.message}
+                  {recordedMessage(notification.message)}
                 </button>
 
-                <small>
-                  {new Date(
-                    notification.created_at.endsWith("Z")
-                      ? notification.created_at
-                      : `${notification.created_at}Z`
-                  ).toLocaleString()}
-                </small>
+                <small>{notificationDate(notification.created_at)}</small>
 
                 {!notification.is_read && (
                   <button
@@ -217,11 +239,12 @@ function NotificationBell({ token, onNavigate, onUnreadSummary }) {
                       )
                     }
                   >
-                    Mark as Read
+                    Mark as read
                   </button>
                 )}
               </div>
             ))}
+          {onViewAll && <button type="button" className="notification-view-all" onClick={() => { setIsOpen(false); onViewAll(); }}>View All notifications</button>}
         </div>
       )}
     </div>

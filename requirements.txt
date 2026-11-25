@@ -68,3 +68,5 @@ websockets==17.3
 resend==2.53.2
 olefile==0.47
 Authlib==1.6.5
+
+cryptography==50.0.2

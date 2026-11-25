@@ -1,8 +1,8 @@
+import {workflowStatusLabel} from './workflowStatus';
 import { useEffect, useState } from "react";
 import { API_URL } from "./api";
 
-const display = value =>
-  String(value ?? "unknown").replaceAll("_", " ");
+const display = value => workflowStatusLabel(typeof value === 'string' ? value : null);
 
 export default function AIPrescreeningPanel({ manuscriptId, token, revision = 0 }) {
   const [state, setState] = useState({
@@ -98,7 +98,7 @@ export default function AIPrescreeningPanel({ manuscriptId, token, revision = 0 
               {analysis && (
                 <>
                   <p>
-                    <strong>Engine:</strong> {display(analysis.engine)}
+                    <strong>Engine:</strong> {typeof analysis.engine === 'string' ? analysis.engine.replaceAll('_', ' ') : 'Unavailable'}
                     {" · "}
                     <strong>Word count:</strong> {analysis.word_count ?? "N/A"}
                   </p>

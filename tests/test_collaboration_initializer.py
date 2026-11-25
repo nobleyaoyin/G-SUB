@@ -16,7 +16,9 @@ def test_fresh_initialization_and_existing_file_protection():
     assert path.parent == initializer.DATA.resolve()
     with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as db:
         assert db.execute('SELECT version FROM collaboration_schema_version').fetchone() == (1,)
-        assert db.execute('SELECT count(*) FROM schema_migrations').fetchone() == (20,)
+        ledger = {row[0] for row in db.execute('SELECT migration_id FROM schema_migrations')}
+        assert ledger == set(initializer.MIGRATIONS + initializer.SUBMISSION_PRIOR_IDS)
+        assert db.execute("SELECT name FROM sqlite_master WHERE name='manuscript_submission_requests'").fetchone()
         assert not db.execute('PRAGMA foreign_key_check').fetchall()
     before = path.read_bytes()
     with pytest.raises(FileExistsError): initializer.initialize(name)
@@ -44,3 +46,11 @@ def test_migration_failure_retains_partial_file(monkeypatch):
     with pytest.raises(RuntimeError, match='file retained'):
         initializer.initialize(name)
     assert (initializer.DATA / name).is_file()
+
+
+def test_non_temporary_workspace_rejected_before_file_creation(monkeypatch, tmp_path):
+    name = fresh_name()
+    monkeypatch.setattr(initializer.tempfile, 'gettempdir', lambda: str(tmp_path))
+    with pytest.raises(ValueError, match='system temporary directory'):
+        initializer.initialize(name)
+    assert not (initializer.DATA / name).exists()

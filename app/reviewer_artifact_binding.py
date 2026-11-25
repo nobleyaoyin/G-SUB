@@ -1,4 +1,4 @@
-"""Disconnected evidence-gated binding prototype; no live route uses this.
+"""Evidence-gated binding helpers used by reviewer artifact routes.
 
 Only trusted application code may select authority, proof and provenance
 adapters. A caller-supplied actor ID or proof adapter is not authentication.
@@ -73,6 +73,20 @@ def _verify_artifact(db, proof_adapter, provenance, storage, mid, rnd, source_id
     with provenance.open_attested_source(db,mid,rnd,source_id,source[5]) as (fd,digest,actual_size,actual_format):
         if (digest,actual_size,actual_format)!=(source_sha,source_size,source_format): raise error('Source provenance mismatch')
         read_verified_fd(fd,source_sha,source_size,source_format)
+    # Candidate-backed artifacts must always use the Main guard, even when an
+    # older caller supplies a different context. Never weaken their revocation.
+    main_proof = (db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='eic_prospective_proofs'").fetchone()
+                  and db.execute('SELECT 1 FROM eic_prospective_proofs WHERE proof_id=?', (proof_ref,)).fetchone())
+    main_candidate = (db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='reviewer_candidate_reservations'").fetchone()
+                      and db.execute('SELECT 1 FROM reviewer_candidate_reservations WHERE candidate_id=?', (storage_id,)).fetchone())
+    if main_proof or main_candidate:
+        from app.main_reviewer_artifacts import GuardedCandidateStorage, require_publication
+        if type(storage) is not GuardedCandidateStorage:
+            raise error('Main candidate context required')
+        artifact_version = db.execute('SELECT artifact_revision FROM reviewer_artifacts WHERE artifact_id=?', (artifact_id,)).fetchone()
+        if not artifact_version:
+            raise error('Artifact version unavailable')
+        require_publication(db, artifact_id, mid, rnd, artifact_version[0], artifact_sha, proof_ref)
     content=storage.read_verified(StorageMetadata(storage_id,artifact_sha,size,fmt))
     return content, fmt
 

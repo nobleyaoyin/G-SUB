@@ -46,3 +46,37 @@ it('shows recorded distribution and revocation events without implying email or 
  expect(JSON.stringify(events)).not.toMatch(/email sent|downloaded/i);
  expect(eicActivity(source,null,[{grant_id:'old',status:'revoked'}]).some(e=>e.key.includes('old'))).toBe(false);
 });
+it('uses recorded reviewer assignment and final-editing dates when available',()=>{
+ const events=eicActivity({...source,
+   assignments:[{assignment_id:4,review_round:1,assigned_at:'2026-05-02T00:00:00Z',status:'assigned'}],
+   final_submissions:[{submission_id:3,status:'submitted',created_at:'2026-05-03T00:00:00Z'}]});
+ expect(events.slice(0,2).map(event=>event.key)).toEqual(['final-submission:3','assignment:4']);
+ expect(events[0].timestamp).toBe('2026-05-03T00:00:00Z');
+ expect(events[1].timestamp).toBe('2026-05-02T00:00:00Z');
+});
+it('shows recorded submission and revision events without exposing record payloads',()=>{
+ const events=eicActivity({...source,
+   submission_events:[{id:1,kind:'submitted',created_at:'2026-05-01T00:00:00Z',message:'private'}],
+   revision_events:[{round_file_id:8,review_round:2,created_at:'2026-05-02T00:00:00Z',file_path:'private'}]});
+ expect(events.slice(0,2).map(event=>event.key)).toEqual(['author-revision:8','submission:1']);
+ expect(events[0].text).toContain('Round 2');
+ expect(JSON.stringify(events)).not.toContain('private');
+});
+it('shows an empty state without inventing events or dates',()=>{
+ render(<EICActivityHistory overview={{manuscript:{manuscript_id:1}}} onDownload={vi.fn()}/>);
+ fireEvent.click(screen.getByText(/Activity History/));
+ expect(screen.getByText('No activity records are available.')).toBeTruthy();
+ expect(screen.queryByRole('listitem')).toBeNull();
+});
+it('labels recorded EIC events with their workflow stages',()=>{
+ const events=eicActivity({...source, submission_events:[{id:8,kind:'submitted',created_at:'2026-01-01T00:00:00Z'}],
+   revision_events:[{round_file_id:9,review_round:2,created_at:'2026-03-02T00:00:00Z'}]});
+ expect(events.find(event=>event.key==='submission:8').stage).toBe('Submission');
+ expect(events.find(event=>event.key==='author-revision:9').stage).toBe('Revision');
+ expect(events.find(event=>event.key==='assignment:1').stage).toBe('Peer Review');
+ expect(events.find(event=>event.key==='final-submission:3').stage).toBe('Final Editing');
+ render(<EICActivityHistory overview={source} onDownload={vi.fn()}/>);
+ fireEvent.click(screen.getByText(/Activity History/));
+ expect(screen.getAllByText('Peer review').length).toBeGreaterThan(0);
+ expect(screen.queryByText('Secret review')).toBeNull();
+});

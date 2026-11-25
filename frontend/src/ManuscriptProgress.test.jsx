@@ -1,3 +1,4 @@
+import {workflowMilestoneLabel, workflowStageLabel} from './workflowStatus';
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import ManuscriptProgress from "./ManuscriptProgress";
@@ -76,16 +77,16 @@ it("presents unverified history neutrally and expands only supplied milestones",
   render(<ManuscriptProgress manuscriptId={1} token="synthetic" />);
   expect(await screen.findByText("Synthetic 1 (#1)")).toBeTruthy();
   expect(screen.getByText("Review round: 2")).toBeTruthy();
-  expect(screen.getByText("Initial Editing", { selector: ".progress-stage-row span" })).toBeTruthy();
+  expect(screen.getByText("Initial editing", { selector: ".progress-stage-row span" })).toBeTruthy();
   const timeline = screen.getByRole("list", { name: "Workflow timeline" });
   expect(timeline.children).toHaveLength(9);
-  const summary = within(timeline).getByText("Initial Editing").closest("summary");
+  const summary = within(timeline).getByText("Initial editing").closest("summary");
   expect(summary.parentElement.open).toBe(false);
   fireEvent.click(summary);
   expect(summary.parentElement.open).toBe(true);
   expect(within(summary.parentElement).getByRole("heading", { name: "Milestones" })).toBeTruthy();
   expect(within(summary.parentElement).getByRole("list").children).toHaveLength(6);
-  for (const name of steps) expect(within(summary.parentElement).getByText(name)).toBeTruthy();
+  for (const name of steps) expect(within(summary.parentElement).getByText(workflowMilestoneLabel(name))).toBeTruthy();
   expect(screen.queryByText("CONFIDENTIAL")).toBeNull();
 });
 
@@ -143,7 +144,7 @@ it('provides an explanatory disclosure for every stage without inventing records
   render(<ManuscriptProgress manuscriptId={2} token="synthetic" />);
   const timeline = await screen.findByRole('list', {name:'Workflow timeline'});
   for (const name of names) {
-    const disclosure = within(timeline).getByText(name).closest('details');
+    const disclosure = within(timeline).getByText(workflowStageLabel(name)).closest('details');
     fireEvent.click(disclosure.querySelector('summary'));
     expect(within(disclosure).getByRole('heading', {name:'Milestones'})).toBeTruthy();
     expect(disclosure.querySelector('.progress-stage-details > p')?.textContent).toBeTruthy();
@@ -159,7 +160,7 @@ it.each(['pending', 'unknown'])('labels neutral stage purposes separately from %
   render(<ManuscriptProgress manuscriptId={2} token="synthetic" />);
   const timeline = await screen.findByRole('list', {name:'Workflow timeline'});
   names.forEach((name, index) => {
-    const disclosure = within(timeline).getByText(name).closest('details');
+    const disclosure = within(timeline).getByText(workflowStageLabel(name)).closest('details');
     fireEvent.click(disclosure.querySelector('summary'));
     const purpose = disclosure.querySelector('.progress-stage-details > p');
     expect(purpose.textContent).toBe(`Stage purpose: ${purposes[index]}`);
@@ -183,7 +184,7 @@ it("renders all four states and honest stage disclosures", async () => {
   render(<ManuscriptProgress manuscriptId={1} token="synthetic" />);
   const list = await screen.findByRole("list", {name:"Workflow timeline"});
   expect([...list.children].map(item => item.className)).toEqual(["progress-completed","progress-current","progress-pending","progress-unknown"]);
-  for (const name of ["Submission", "Initial Screening", "Initial Editing", "Peer Review"]) {
+  for (const name of ["Submission", "Initial screening", "Initial editing", "Peer review"]) {
     const disclosure = within(list).getByText(name).closest("details");
     expect(disclosure.open).toBe(false);
     fireEvent.click(disclosure.querySelector("summary"));
@@ -194,13 +195,15 @@ it("renders all four states and honest stage disclosures", async () => {
   expect(screen.getAllByText("Detailed milestones are not included in this view.")).toHaveLength(2);
   expect(screen.getByText("This stage's status cannot be verified from the available information.")).toBeTruthy();
   expect(screen.getByText("Editor assessment")).toBeTruthy();
-  expect(within(list).getByText('Initial Screening').closest('details').querySelector('.progress-stage-details > p').textContent).toContain("This stage covers the editorial team's initial assessment.");
+  expect(within(list).getByText('Initial screening').closest('details').querySelector('.progress-stage-details > p').textContent).toContain("This stage covers the editorial team's initial assessment.");
   expect(progressStyles).toMatch(/width:\s*24px/);
   expect(progressStyles).toMatch(/height:\s*24px/);
-  expect(progressStyles).toMatch(/progress-pending::before\s*\{\s*border:\s*2px solid #0f172a/);
+  expect(progressStyles).toMatch(/progress-pending::before\s*\{\s*border:\s*2px solid var\(--text-primary\)/);
+  expect(readFileSync('src/index.css','utf8')).toMatch(/--text-primary:\s*#0f172a/);
   expect(progressStyles).toMatch(/progress-completed::before/);
   expect(progressStyles).toMatch(/progress-current::before/);
-  expect(progressStyles).toMatch(/2px dashed #64748b/);
+  expect(progressStyles).toMatch(/2px dashed var\(--control-border\)/);
+  expect(readFileSync('src/index.css','utf8')).toMatch(/--control-border:\s*#64748b/);
 });
 
 it('withdraws progress immediately when authentication changes for the same manuscript', async () => {
@@ -223,4 +226,48 @@ it('can omit a round already displayed by the enclosing workspace', async () => 
   expect(screen.queryByText('Synthetic 1 (#1)')).toBeNull();
   rerender(<ManuscriptProgress manuscriptId={1} token="synthetic" showTitle={false} />);
   expect(screen.getByText('Review round: 2')).toBeTruthy();
+});
+
+it('omits an empty summary when the workspace already supplies its context', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ok:true,json:async()=>payload(1)})));
+  const {container} = render(<ManuscriptProgress manuscriptId={1} token="synthetic" showTitle={false} showRound={false} showNextAction={false} />);
+  expect(await screen.findByLabelText('Workflow timeline')).toBeTruthy();
+  expect(container.querySelector('.progress-summary')).toBeNull();
+});
+
+it('keeps errors and the publication caveat outside collapsed milestones', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ok:true,json:async()=>payload(1)}).mockResolvedValue({ok:false}));
+  const user = userEvent.setup();
+  render(<ManuscriptProgress manuscriptId={1} token="synthetic" showTitle={false} showRound={false} collapseMilestones />);
+  const summary = await screen.findByText('Workflow milestones');
+  const disclosure = summary.closest('details');
+  expect(disclosure.open).toBe(false);
+  expect(screen.getByText('Check the workflow.')).toBeTruthy();
+  expect(screen.getByText('Publication is a local prototype.').closest('details')).toBeNull();
+  await user.click(summary);
+  expect(disclosure.open).toBe(true);
+  await user.click(summary);
+  expect(disclosure.open).toBe(false);
+  fireEvent.focus(window);
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toContain('last available information');
+  expect(alert.closest('details')).toBeNull();
+  expect(disclosure.open).toBe(false);
+});
+
+it.each([
+  ['Submission', 1], ['Peer Review', 2], ['Publication', 3],
+])('preserves %s stage and round %i in standalone and embedded views', async (stage, round) => {
+  const data = {...payload(1), review_round: round, current_stage: stage,
+    stages: names.map(name => ({name, state: name === stage ? 'current' : 'pending'}))};
+  vi.stubGlobal('fetch', vi.fn(async () => ({ok:true, json:async()=>data})));
+  const {rerender} = render(<ManuscriptProgress manuscriptId={1} token="synthetic" />);
+  const list = await screen.findByRole('list', {name:'Workflow timeline'});
+  expect(within(list).getByText(workflowStageLabel(stage)).closest('li').className).toBe('progress-current');
+  expect(screen.getByText(`Review round: ${round}`)).toBeTruthy();
+  expect(screen.getByText('Check the workflow.')).toBeTruthy();
+  rerender(<ManuscriptProgress manuscriptId={1} token="synthetic" showTitle={false} showRound={false} showNextAction={false} />);
+  expect(within(list).getByText(workflowStageLabel(stage)).closest('li').className).toBe('progress-current');
+  expect(screen.queryByText(`Review round: ${round}`)).toBeNull();
+  expect(screen.queryByText('Synthetic 1 (#1)')).toBeNull();
 });

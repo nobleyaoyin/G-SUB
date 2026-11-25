@@ -1,0 +1,24 @@
+/* Shared layout only for manuscript lists; role-specific data and panels stay owned by each dashboard. */
+.manuscripts-list-layout,
+.author-content-layout.has-manuscript-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 290px;
+  grid-template-areas: "content statistics";
+  gap: 20px;
+  align-items: start;
+}
+.manuscripts-list-layout > .manuscripts-list-content,
+.author-content-layout.has-manuscript-list > .author-primary-content { grid-area: content; min-width: 0; }
+.manuscripts-list-layout > .manuscripts-list-sidebar,
+.author-content-layout.has-manuscript-list > .author-statistics-sidebar { grid-area: statistics; min-width: 0; position: sticky; top: 20px; }
+.manuscripts-list-sidebar .reviewer-stats { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+@media (min-width: 701px) and (max-width: 900px) {
+  .manuscripts-list-layout,
+  .author-content-layout.has-manuscript-list { grid-template-columns: minmax(0, 1fr) minmax(190px, 29%); }
+}
+@media (max-width: 700px) {
+  .manuscripts-list-layout,
+  .author-content-layout.has-manuscript-list { grid-template-columns: minmax(0, 1fr); grid-template-areas: "content" "statistics"; }
+  .manuscripts-list-layout > .manuscripts-list-sidebar,
+  .author-content-layout.has-manuscript-list > .author-statistics-sidebar { position: static; }
+}

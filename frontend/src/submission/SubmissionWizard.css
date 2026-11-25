@@ -336,3 +336,60 @@
     padding: 17px;
   }
 }
+
+/* Document controls share the wizard's existing secondary action styling. */
+.submission-wizard .wizard-document-editor button,
+.submission-wizard .wizard-selected-file button,
+.submission-wizard .wizard-upload-area input[type="file"]::file-selector-button {
+  min-height: 42px;
+  padding: 10px 17px;
+  border: 1px solid var(--control-border, #cbd5e1);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  color: var(--text-primary, #172033);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.submission-wizard .wizard-upload-area input[type="file"]::file-selector-button { margin-right: 12px; }
+.submission-wizard :is(.wizard-secondary, .wizard-document-editor button, .wizard-selected-file button):not(:disabled):hover,
+.submission-wizard .wizard-upload-area input[type="file"]:not(:disabled):hover::file-selector-button {
+  background: var(--disabled-surface, #edf2f7);
+  color: var(--text-primary, #172033);
+}
+.submission-wizard .wizard-primary:not(:disabled):hover { background: #1d4ed8; color: #fff; }
+.submission-wizard :is(button, input, textarea):focus-visible {
+  outline: 3px solid var(--primary-color, #2563eb);
+  outline-offset: 2px;
+}
+.submission-wizard :is(.wizard-document-editor button, .wizard-selected-file button):disabled { opacity: .55; cursor: not-allowed; }
+.submission-wizard .wizard-document-editor :is(input, textarea),
+.submission-wizard .wizard-version-search input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--control-border, #cbd5e1);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  color: var(--text-primary, #172033);
+  font: inherit;
+}
+.wizard-version-search { display: grid; gap: 8px; font-weight: 600; }
+.wizard-version-list { display: grid; gap: 10px; padding: 0; margin: 14px 0 0; list-style: none; }
+.wizard-version-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--control-border, #d9e0e9);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.wizard-version-card p, .wizard-editor-status { color: var(--text-secondary, #64748b); line-height: 1.5; }
+.wizard-version-card p { margin: 5px 0 0; font-size: 13px; }
+@media (max-width: 650px) { .wizard-version-card button { width: 100%; } }
+.submission-wizard :is(.wizard-secondary, .wizard-document-editor button, .wizard-selected-file button):not(:disabled):active { background: #dbe4f0; }
+.submission-wizard .wizard-primary:not(:disabled):active { background: #1e40af; }
+.submission-wizard .wizard-upload-area input[type="file"]:not(:disabled):active::file-selector-button { background: #dbe4f0; }
+.submission-wizard .wizard-document-editor :is(input, textarea):disabled { opacity: .55; cursor: not-allowed; }

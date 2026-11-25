@@ -11,8 +11,8 @@ it('shows unread notice, marks it read and opens its manuscript', async()=>{
   });
   vi.stubGlobal('fetch',request);render(<NotificationBell token="synthetic" onNavigate={navigate} />);
   fireEvent.click(screen.getByRole('button',{name:'Notifications'}));
-  fireEvent.click(await screen.findByRole('button',{name:'Mark as Read'}));
-  await waitFor(()=>expect(screen.queryByRole('button',{name:'Mark as Read'})).toBeNull());
+  fireEvent.click(await screen.findByRole('button',{name:'Mark as read'}));
+  await waitFor(()=>expect(screen.queryByRole('button',{name:'Mark as read'})).toBeNull());
   fireEvent.click(screen.getByRole('button',{name:'Synthetic notice'}));
   expect(navigate).toHaveBeenCalledWith(expect.objectContaining({manuscript_id:4}));
   expect(screen.queryByRole('button',{name:/refresh|reload|sync/i})).toBeNull();
@@ -57,9 +57,23 @@ it('reports only validated user-specific unread summaries and fails closed on an
   const summary=vi.fn(); let invalid=false;
   vi.stubGlobal('fetch',vi.fn(async url=>({ok:true,json:async()=>url.endsWith('/unread-count')?{unread_count:invalid?-1:2}:[]})));
   render(<NotificationBell token="synthetic" onUnreadSummary={summary} />);
-  await waitFor(()=>expect(summary).toHaveBeenLastCalledWith({token:'synthetic',state:'ready',count:2}));
+  await waitFor(()=>expect(summary).toHaveBeenLastCalledWith({token:'synthetic',state:'ready',count:2,recent:[]}));
   invalid=true; fireEvent.click(screen.getByRole('button',{name:'Notifications'}));
-  await waitFor(()=>expect(summary).toHaveBeenLastCalledWith({token:'synthetic',state:'error',count:null}));
+  await waitFor(()=>expect(summary).toHaveBeenLastCalledWith({token:'synthetic',state:'error',count:null,recent:[]}));
+});
+
+it('publishes only the three most recent user notifications and updates read state', async()=>{
+  const summary=vi.fn(); let read=false;
+  const items=[1,2,3,4].map(id=>({notification_id:id,manuscript_id:id,message:`Notice ${id}`,created_at:'2026-01-01T00:00:00Z',is_read:false}));
+  vi.stubGlobal('fetch',vi.fn(async (url,options={})=>{
+    if(options.method==='PATCH') read=true;
+    return {ok:true,json:async()=>options.method==='PATCH'?{}:url.endsWith('/unread-count')?{unread_count:read?3:4}:items.map((item,i)=>({...item,is_read:read&&i===0}))};
+  }));
+  render(<NotificationBell token="synthetic" onUnreadSummary={summary} onNavigate={()=>{}} />);
+  await waitFor(()=>expect(summary).toHaveBeenLastCalledWith(expect.objectContaining({count:4,recent:items.slice(0,3)})));
+  fireEvent.click(screen.getByRole('button',{name:'Notifications'}));
+  const buttons=await screen.findAllByRole('button',{name:'Mark as read'});fireEvent.click(buttons[0]);
+  await waitFor(()=>expect(summary).toHaveBeenLastCalledWith(expect.objectContaining({count:3,recent:expect.arrayContaining([expect.objectContaining({notification_id:1,is_read:true})])})));
 });
 
 it('discards a delayed previous-token response after switching users', async()=>{
@@ -91,6 +105,25 @@ it('closes with Escape and returns keyboard focus to the bell', async()=>{
   expect(screen.queryByRole('button',{name:'Synthetic notice'})).toBeNull();
   expect(document.activeElement).toBe(bell);
   expect(bell.getAttribute('aria-expanded')).toBe('false');
+});
+
+it('opens with Space without marking notifications as read', async()=>{
+  const request=vi.fn(async url=>({ok:true,json:async()=>url.endsWith('/unread-count')?{unread_count:1}:[{notification_id:9,manuscript_id:3,message:'Synthetic unread',created_at:'2026-01-01T00:00:00Z',is_read:false}]}));
+  vi.stubGlobal('fetch',request);
+  const user=userEvent.setup();render(<NotificationBell token="synthetic" onNavigate={()=>{}} />);
+  const bell=screen.getByRole('button',{name:'Notifications'});await user.tab();
+  expect(document.activeElement).toBe(bell);await user.keyboard(' ');
+  expect(await screen.findByRole('button',{name:'Synthetic unread'})).toBeTruthy();
+  expect(bell.getAttribute('aria-expanded')).toBe('true');
+  expect(request.mock.calls.some(([,options])=>options?.method==='PATCH')).toBe(false);
+});
+
+it('supports start-aligned placement without changing notification behavior',async()=>{
+  vi.stubGlobal('fetch',vi.fn(async url=>({ok:true,json:async()=>url.endsWith('/unread-count')?{unread_count:0}:[]})));
+  const {container}=render(<NotificationBell token="synthetic" align="start" />);
+  expect(container.querySelector('.notification-container-start')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Notifications'}));
+  expect(await screen.findByText('No notifications yet.')).toBeTruthy();
 });
 
 it('does not show stale counts or an empty success state when refresh fails', async()=>{

@@ -1,3 +1,11 @@
+import {displayError} from './displayError';
+import './ManuscriptsListLayout.css';
+import {workflowStatusLabel} from './workflowStatus';
+import useStageProjection, {StageProjectionNotice} from './useStageProjection';
+import RoleStatistics from './RoleStatistics';
+import RoleListControls, { selectRoleItems } from "./RoleListControls";
+import RoleOverview from "./RoleOverview";
+import ManuscriptTimeline from "./ManuscriptTimeline";
 import useManuscriptReturn from "./useManuscriptReturn";
 import useReturnRefresh from "./useReturnRefresh";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -10,16 +18,29 @@ import NotesPanel from "./NotesPanel";
 import GeneralCommentsPanel from "./GeneralCommentsPanel";
 
 export default function FormattingPanel({
-  role, token, manuscriptId, canInvite = false,
-  onChanged, navigationTarget, onDirtyChange, registerManuscriptReturn
+  role, token, manuscriptId, canInvite = false, showProgress = true,
+  onChanged, navigationTarget, onDirtyChange, registerManuscriptReturn, section, onSectionChange
 }) {
+  const [listSearch, setListSearch] = useState("");
+  const [listStatus, setListStatus] = useState("");
+  const [listSort, setListSort] = useState("recent");
   const [items, setItems] = useState([]);
+  const [formatterProgressTask, setFormatterProgressTask] = useState(null);
   const [itemsScope, setItemsScope] = useState(null);
   const [people, setPeople] = useState([]);
   const [choice, setChoice] = useState("");
   const [selectedItem, setSelectedItem] = useState(null);
+  const downloadScope = useRef({ token, role, manuscriptId, selectedItem, mounted: true });
+  if (downloadScope.current.token !== token || downloadScope.current.role !== role ||
+      downloadScope.current.manuscriptId !== manuscriptId || downloadScope.current.selectedItem !== selectedItem) {
+    downloadScope.current = { token, role, manuscriptId, selectedItem, mounted: true };
+  }
+  useEffect(() => { downloadScope.current.mounted = true; return () => { downloadScope.current.mounted = false; }; }, []);
   const lastNavigation = useRef(null);
   const [progressRevision, setProgressRevision] = useState(0);
+  const receiveFormatterProgress = useCallback(data => {
+    setFormatterProgressTask(data ? { token, revision:progressRevision, scope:downloadScope.current, manuscriptId:data.manuscript_id, task:data.participant_task, stage:data.current_stage } : null);
+  }, [token, progressRevision]);
   const [comments, setComments] = useState("");
   const [decision, setDecision] = useState("");
   const [file, setFile] = useState(null);
@@ -140,9 +161,8 @@ export default function FormattingPanel({
 
   useReturnRefresh(
     () => load()
-      .then(() => {
-        setNeedsRefresh(false);
-        setError("");
+      .then(loaded => {
+        if (loaded) { setNeedsRefresh(false); setError(""); }
       })
       .catch(e => setError(e.message)),
     busy || (!needsRefresh && Boolean(comments || decision || file || choice))
@@ -150,6 +170,8 @@ export default function FormattingPanel({
 
   const action = async (path, data) => {
     if (busy || needsRefresh) return;
+    const expected = downloadScope.current;
+    const current = () => expected.mounted && downloadScope.current === expected;
     setBusy(true);
     setError("");
     setMessage("");
@@ -164,32 +186,34 @@ export default function FormattingPanel({
         },
         body: form ? data : JSON.stringify(data)
       });
-    } catch (e) {
-      setError(actionFailureMessage(e));
-      if (!e.confirmedRejection) setNeedsRefresh(true);
-      setBusy(false);
-      return;
-    }
-
-    setMessage("Action completed.");
-    setComments("");
-    setDecision("");
-    setFile(null);
-
-    try {
-      await load();
-      if (onChanged && await onChanged() === false) {
-        throw new Error("View changed");
+      if (!current()) return;
+      setMessage("Action completed.");
+      setComments("");
+      setDecision("");
+      setFile(null);
+      try {
+        const loaded = await load();
+        if (!current() || !loaded) return;
+        if (onChanged && await onChanged() === false) throw new Error("View changed");
+      } catch {
+        if (current()) {
+          setNeedsRefresh(true);
+          setError("Action saved, but the latest state could not be loaded. Return to this view; do not repeat the action.");
+        }
       }
-    } catch {
-      setNeedsRefresh(true);
-      setError("Action saved, but the latest state could not be loaded. Return to this view; do not repeat the action.");
+    } catch (e) {
+      if (current()) {
+        setError(actionFailureMessage(e));
+        if (!e.confirmedRejection) setNeedsRefresh(true);
+      }
     } finally {
-      setBusy(false);
+      if (downloadScope.current.mounted) setBusy(false);
     }
   };
 
   const download = async path => {
+    const expected = downloadScope.current;
+    const current = () => expected.mounted && downloadScope.current === expected;
     try {
       const r = await fetch(`${API_URL}/formatting${path}`, {
         headers: { Authorization: `Bearer ${token}` }
@@ -197,6 +221,7 @@ export default function FormattingPanel({
       if (!r.ok) throw new Error("File unavailable");
 
       const blob = await r.blob();
+      if (!current()) return;
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -213,13 +238,15 @@ export default function FormattingPanel({
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
-      setError(e.message);
+      if (current()) setError(e.message);
     }
   };
 
   const visibleItems = manuscriptId == null
     ? safeItems
     : safeItems.filter(item => item.manuscript_id === manuscriptId);
+
+  const stageProjection = useStageProjection(visibleItems, token, role === "formatter" ? listStatus : "");
 
   if (
     (role === "editor" || role === "formatter") &&
@@ -245,6 +272,10 @@ export default function FormattingPanel({
 
   const formatterMode = role === "formatter" || role === "editor";
 
+  if (role === 'formatter' && section === 'dashboard') {
+    return <RoleOverview label="Formatter" items={safeItems} loading={itemsScope !== requestScope.current} error={displayError(error)} onNavigate={onSectionChange} onOpen={item => { setSelectedItem(item.manuscript_id); onSectionChange('manuscripts'); }} />;
+  }
+
   if (formatterMode && manuscriptId == null && selectedItem === null) {
     return (
       <section
@@ -254,16 +285,21 @@ export default function FormattingPanel({
         aria-label="Formatting workflow"
         data-sidebar-target="manuscripts"
       >
+        <div className={role === "formatter" && section === "manuscripts" ? "manuscripts-list-layout" : undefined}>
+        <div className={role === "formatter" && section === "manuscripts" ? "manuscripts-list-content" : undefined}>
         <h2>{(role === "formatter" || role === "editor") ? "Formatting Dashboard" : "Manuscripts"}</h2>
-        {error && <p role="alert">{error}</p>}
+        {error && <p role="alert">{displayError(error)}</p>}
+        {role === "formatter" && section === "manuscripts" && <StageProjectionNotice projection={stageProjection} />}
+        {role === "formatter" && section === "manuscripts" && <RoleListControls projection={stageProjection} items={stageProjection.items} search={listSearch} setSearch={setListSearch} status={listStatus} setStatus={setListStatus} sort={listSort} setSort={setListSort} />}
+        {role === "formatter" && section === "manuscripts" && visibleItems.length > 0 && (listSearch || listStatus) && !stageProjection.loading && !stageProjection.unavailable && selectRoleItems(stageProjection.items, listSearch, listStatus, listSort).length === 0 && <p>No manuscripts match the current filters.</p>}
         {visibleItems.length === 0 ? (
           <p>No formatting assignments.</p>
         ) : (
           <div className="formatter-manuscript-list">
-            {visibleItems.map(item => (
+            {(role === "formatter" && section === "manuscripts" ? selectRoleItems(stageProjection.items, listSearch, listStatus, listSort) : visibleItems).map(item => (
               <article className="initial-editing-item" key={item.manuscript_id}>
                 {manuscriptId == null && <h3>{item.title?.trim() ? `#${item.manuscript_id} ${item.title}` : `Manuscript #${item.manuscript_id}`}</h3>}
-                <p>{item.status.replaceAll("_", " ")}</p>
+                <p>{workflowStatusLabel(item.status)}</p>
                 <button
                   type="button"
                   onClick={() => setSelectedItem(item.manuscript_id)}
@@ -274,6 +310,9 @@ export default function FormattingPanel({
             ))}
           </div>
         )}
+        </div>
+        {role === "formatter" && section === "manuscripts" && <aside className="manuscripts-list-sidebar" aria-label="Manuscript statistics"><RoleStatistics items={safeItems} label="Formatting assignments" loading={itemsScope !== requestScope.current} error={displayError(error)} /></aside>}
+        </div>
       </section>
     );
   }
@@ -283,13 +322,17 @@ export default function FormattingPanel({
       ["pending", "accepted"].includes(i.status)
     );
     const latest = item.submissions[0];
+    const currentTask = formatterProgressTask?.token === token && formatterProgressTask?.revision === progressRevision &&
+      formatterProgressTask?.scope === downloadScope.current && formatterProgressTask?.manuscriptId === item.manuscript_id &&
+      formatterProgressTask?.task?.relevant_stage === formatterProgressTask?.stage && !needsRefresh && !error
+      ? formatterProgressTask.task : null;
 
     return (
       <article className="formatter-manuscript-card" key={item.manuscript_id}>
         <header className="formatter-manuscript-header">
-          {manuscriptId == null && <h3>{item.title?.trim() ? `#${item.manuscript_id} ${item.title}` : `Manuscript #${item.manuscript_id}`}</h3>}
+          {manuscriptId == null && <div><h3>{item.title?.trim() || `Manuscript #${item.manuscript_id}`}</h3>{item.title?.trim() && <p className="formatter-manuscript-id">Manuscript #{item.manuscript_id}</p>}</div>}
           <span className="formatter-status">
-            {item.status.replaceAll("_", " ")}
+            {workflowStatusLabel(item.status)}
           </span>
         </header>
 
@@ -298,25 +341,27 @@ export default function FormattingPanel({
           <details className="formatter-collapsible"><summary>Comments (Staff Shared)</summary><GeneralCommentsPanel manuscriptId={item.manuscript_id} token={token} onDirtyChange={setStaffCommentDirty} /></details>
         </div>}
 
-        <section className="formatter-progress-section">
-          {active?.status === "accepted" ? (
+        {manuscriptId == null && active?.status === 'accepted' && <ManuscriptTimeline manuscriptId={item.manuscript_id} token={token} revision={progressRevision} />}
+        {(showProgress || active?.status !== "accepted") && <section className="formatter-progress-section">
+          {active?.status === "accepted" ? (showProgress &&
             <ManuscriptProgress showTitle={false} showNextAction={false}
               key={`${item.manuscript_id}-${progressRevision}`}
               manuscriptId={item.manuscript_id}
               token={token}
+              onProgressChange={receiveFormatterProgress}
             />
           ) : (
             <p>Progress is available after the invitation is accepted.</p>
           )}
-        </section>
-        <p><strong>Next action:</strong> {formatterPrompt(item, needsRefresh || Boolean(error))}</p>
+        </section>}
+        <p><strong>Next action:</strong> {currentTask && ['action_required','waiting','no_action'].includes(currentTask.task_state) && typeof currentTask.task_message === 'string' ? currentTask.task_message : formatterPrompt(item, needsRefresh || Boolean(error))}{currentTask?.task_state === 'action_required' && ['Formatting', 'Proofing'].includes(currentTask.relevant_stage) && currentTask.action_label === 'View formatting actions' && currentTask.permitted_action_target === `#formatting-action-${item.manuscript_id}` && active?.status === 'accepted' && item.status === 'formatting' && <> <a href={currentTask.permitted_action_target}>{currentTask.action_label}</a></>}</p>
 
         <details className="formatter-collapsible">
           <summary>Manuscript Information</summary>
           <div className="formatter-section-content">
             <p>
               <strong>Manuscript status:</strong>{" "}
-              {item.status.replaceAll("_", " ")}
+              {workflowStatusLabel(item.status)}
             </p>
             {item.publication && (
               <p>
@@ -326,7 +371,7 @@ export default function FormattingPanel({
               </p>
             )}
             {item.invitations.map(i => (
-              <p key={i.invitation_id}>{i.formatter} — {i.status}</p>
+              <p key={i.invitation_id}>{i.formatter} — {workflowStatusLabel(i.status)}</p>
             ))}
           </div>
         </details>
@@ -358,7 +403,7 @@ export default function FormattingPanel({
                         <span className="formatter-latest-badge">Latest</span>
                       )}
                       <span className={`formatter-history-status ${s.status}`}>
-                        {s.status.replaceAll("_", " ")}
+                        {workflowStatusLabel(s.status)}
                       </span>
                     </div>
                   </div>
@@ -405,7 +450,7 @@ export default function FormattingPanel({
           </details>
         )}
 
-        <section className="formatter-actions">
+        <section className="formatter-actions" id={`formatting-action-${item.manuscript_id}`}>
           <h4>Formatting Actions</h4>
 
           {active?.status === "pending" && (
@@ -498,7 +543,7 @@ export default function FormattingPanel({
       <article className="initial-editing-item" key={item.manuscript_id}>
         {manuscriptId == null && <h3>{item.title?.trim() ? `#${item.manuscript_id} ${item.title}` : `Manuscript #${item.manuscript_id}`}</h3>}
 
-        {role === "editor" && (
+        {role === "editor" && showProgress && (
           active?.status === "accepted" ? (
             <ManuscriptProgress showTitle={false} showNextAction={false}
               key={`${item.manuscript_id}-${progressRevision}`}
@@ -509,7 +554,7 @@ export default function FormattingPanel({
         )}
 
         {role === "editor" && <h4>Manuscript Information</h4>}
-        <p>Manuscript: {item.status.replaceAll("_", " ")}</p>
+        <p>Manuscript: {workflowStatusLabel(item.status)}</p>
 
         {item.publication && (
           <p>
@@ -520,7 +565,7 @@ export default function FormattingPanel({
         )}
 
         {item.invitations.map(i => (
-          <p key={i.invitation_id}>{i.formatter} — {i.status}</p>
+          <p key={i.invitation_id}>{i.formatter} — {workflowStatusLabel(i.status)}</p>
         ))}
 
         {role === "eic" && !active &&
@@ -536,13 +581,13 @@ export default function FormattingPanel({
               <label>
                 Editor
                 <select required value={choice} onChange={e => setChoice(e.target.value)}>
-                  <option value="">Choose Editor</option>
+                  <option value="">Choose editor</option>
                   {people.map(p => (
                     <option key={p.user_id} value={p.user_id}>{p.name}</option>
                   ))}
                 </select>
               </label>
-              <button disabled={busy || needsRefresh}>Send Editor invitation</button>
+              <button disabled={busy || needsRefresh}>Send editor invitation</button>
               <p>Requires an EIC-approved and author-confirmed final edit.</p>
             </form>
           )}
@@ -593,7 +638,7 @@ export default function FormattingPanel({
 
         {item.submissions.map(s => (
           <div key={s.submission_id}>
-            <p>Formatted #{s.submission_id} · {s.status.replaceAll("_", " ")} · {s.comments}</p>
+            <p>Formatted #{s.submission_id} · {workflowStatusLabel(s.status)} · {s.comments}</p>
             <p>Author: {s.author_comments || "—"} · EIC: {s.eic_comments || "—"}</p>
             <button onClick={() => download(`/submissions/${s.submission_id}/download`)}>
               Download formatted file
@@ -639,7 +684,7 @@ export default function FormattingPanel({
             Next: {!active ? "EIC assigns an Editor for formatting"
               : active.status === "pending" ? "Editor responds"
               : !latest || latest.status.endsWith("revision_requested")
-                ? "Editor uploads a PDF"
+                ? "Editor uploads a PDF, DOCX, DOC, or UTF-8 TXT file"
                 : latest.status === "pending_author" ? "author reviews formatting"
                 : latest.status === "pending_eic" ? "EIC checks author review"
                 : "EIC may publish the local prototype"}
@@ -649,15 +694,8 @@ export default function FormattingPanel({
     );
   };
 
-  return (
-    <section
-      className={`initial-editing-panel formatting-workflow ${
-        (role === "formatter" || role === "editor") ? "formatter-dashboard" : ""
-      }`}
-      aria-label="Formatting workflow"
-      data-workspace={formatterMode && manuscriptId == null && selectedItem !== null ? "selected" : undefined}
-      data-sidebar-target={formatterMode ? "manuscripts" : undefined}
-    >
+  const formatterDetail = role === "formatter" && manuscriptId == null && selectedItem !== null;
+  const workspaceContent = <>
       <div className="initial-editing-heading">
         <h2>{(role === "formatter" || role === "editor") ? "Formatting Dashboard" : "Formatting and local publication"}</h2>
       </div>
@@ -671,17 +709,31 @@ export default function FormattingPanel({
           setFile(null);
           setSelectedItem(null);
         }}>
-          Back to Manuscripts
+          Back to manuscripts
         </button>
       )}
 
-      {error && <p role="alert">{error}</p>}
+      {error && <p role="alert">{displayError(error)}</p>}
       {message && <p role="status">{message}</p>}
       {visibleItems.length === 0 && <p>No formatting assignments.</p>}
 
       {visibleItems
         .filter(item => !formatterMode || item.manuscript_id === (manuscriptId ?? selectedItem))
         .map(item => (role === "formatter" || role === "editor") ? renderFormatter(item) : renderExisting(item))}
+  </>;
+  return (
+    <section
+      className={`initial-editing-panel formatting-workflow ${
+        (role === "formatter" || role === "editor") ? "formatter-dashboard" : ""
+      }`}
+      aria-label="Formatting workflow"
+      data-workspace={formatterMode && manuscriptId == null && selectedItem !== null ? "selected" : undefined}
+      data-sidebar-target={formatterMode ? "manuscripts" : undefined}
+    >
+      {formatterDetail ? <div className="manuscripts-list-layout">
+        <aside className="manuscripts-list-sidebar" aria-label="Manuscript statistics"><RoleStatistics items={safeItems} label="Formatting assignments" loading={itemsScope !== requestScope.current} error={displayError(error)} /></aside>
+        <div className="manuscripts-list-content">{workspaceContent}</div>
+      </div> : workspaceContent}
     </section>
   );
 }

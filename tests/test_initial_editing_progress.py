@@ -20,12 +20,14 @@ class InitialEditingProgressTests(unittest.TestCase):
         confirmation=None,
     ):
         db = MagicMock()
+        db.get.return_value = SimpleNamespace(author_id=5)
 
         submission = (
             SimpleNamespace(
                 submission_id=100,
                 manuscript_id=1,
                 editor_id=editor_id,
+                file_path="uploads/initial_editing/1/synthetic.pdf",
                 status=status,
             )
             if status is not None
@@ -43,7 +45,8 @@ class InitialEditingProgressTests(unittest.TestCase):
         results = [submission, invitation]
         if status == "eic_approved":
             results.append(
-                SimpleNamespace(decision=confirmation)
+                SimpleNamespace(decision=confirmation, author_id=5,
+                                file_path="uploads/initial_editing/1/synthetic.pdf")
                 if confirmation is not None
                 else None
             )

@@ -26,7 +26,7 @@ export default function RoleSelection({ onSelect, error }) {
             </button>
           ))}
         </div>
-        <p className="role-note">Your account permissions are determined by the system after sign-in.</p>
+        <p className="role-note">Your account permissions are determined by the system after sign-in. Initial and final editing are assignments. Editor and formatter accounts use General / Copy Editor; formatting requires an assignment.</p>
       </div>
     </main>
   );

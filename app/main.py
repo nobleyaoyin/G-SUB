@@ -3,13 +3,20 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.maintenance_http import MaintenanceHTTPMiddleware
 
 from app.database import engine, BASE_DIR
 from sqlalchemy import inspect, text
 from app import models
 from app.config import IS_DEMO
 from app.routers import users, manuscripts, assignments, reviews, notifications, eic, agreements, final_workflow, formatting, email_verification, google_oauth, onlyoffice, general_comments, personal_notes
+from app.routers import stage_dialogue
 from app.routers import document_distribution
+from app.routers import eic_prospective_proofs
+from app.routers import eic_reviewer_candidates
+from app.routers import lifecycle_admin
+from app.routers import author_submission_drafts
+from app.routers import author_submission_attachments
 
 
 # Initialize database tables when the application starts
@@ -68,8 +75,8 @@ app = FastAPI(
     openapi_url=None if IS_DEMO else "/openapi.json",
 )
 
-
 # Allow React frontend to communicate with FastAPI
+app.add_middleware(MaintenanceHTTPMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -98,7 +105,13 @@ app.include_router(formatting.router)
 app.include_router(onlyoffice.router)
 app.include_router(general_comments.router)
 app.include_router(personal_notes.router)
+app.include_router(stage_dialogue.router)
 app.include_router(document_distribution.router)
+app.include_router(eic_prospective_proofs.router)
+app.include_router(eic_reviewer_candidates.router)
+app.include_router(lifecycle_admin.router)
+app.include_router(author_submission_drafts.router)
+app.include_router(author_submission_attachments.router)
 
 
 # Home endpoint

@@ -86,13 +86,30 @@ def session_status(mid: int, stage: str, sid: str, user: User = Depends(get_curr
         raise HTTPException(409, 'Draft changed; reopen before saving')
     last = db.execute(text('SELECT status,digest FROM onlyoffice_callbacks WHERE session_id=:sid AND status IN (2,3,6,7) ORDER BY rowid DESC LIMIT 1'), {'sid':sid}).first()
     result = {'state':'waiting', 'closed':bool(session['closed']), 'version':None}
-    if last and last[0] in (3,7): result['state'] = 'error'
+    if last and (last[0] in (3,7) or (last[0] in (2,6) and last[1] is None)): result['state'] = 'error'
     elif last and last[0] in (2,6):
         item = next((v for v in rows(db,mid,user.user_id,stage,session['scope_key']) if v['version_id'] == session['head_id']), None)
         if item:
             svc.read_draft(item['file_ref'],mid,stage,user.user_id,item['file_sha256'])
             result.update(state='saved',version={'id':item['version_id'],'number':item['version_number']})
     return JSONResponse(result, headers={'Cache-Control':'no-store'})
+
+
+@router.post('/manuscripts/{mid}/{stage}/sessions/{sid}/retry-save')
+def retry_save(mid: int, stage: str, sid: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    secret, server, _ = svc.config(); svc.require_schema(db)
+    session, _ = state(db, sid)
+    if session['actor_id'] != user.user_id or session['manuscript_id'] != mid or session['stage'] != stage:
+        raise HTTPException(404, 'Session unavailable')
+    if session['closed'] or global_head(db, mid, stage, session['source_ref'], session['source_sha256']) != session['global_head_id']:
+        raise HTTPException(409, 'Editing session is closed or stale')
+    last = db.execute(text('SELECT status,digest FROM onlyoffice_callbacks WHERE session_id=:sid AND status IN (2,3,6,7) ORDER BY rowid DESC LIMIT 1'), {'sid':sid}).first()
+    if not last or not (last[0] in (3,7) or (last[0] in (2,6) and last[1] is None)):
+        raise HTTPException(409, 'There is no failed save to retry')
+    # Never hold a database transaction while the server may issue a callback.
+    db.rollback()
+    svc.request_force_save(sid, secret, server)
+    return JSONResponse({'state':'requested'}, status_code=202, headers={'Cache-Control':'no-store'})
 
 
 @router.post('/manuscripts/{mid}/{stage}/versions/{vid}/preview')
@@ -241,10 +258,24 @@ async def callback(sid: str, request: Request, authorization: str | None = Heade
         if status in (2,6):
             if latest != session['head_id'] or global_head(db, mid, stage, session['source_ref'], session['source_sha256']) != session['global_head_id']:
                 raise HTTPException(409, 'Draft changed; reopen before saving')
+            failed_head = db.execute(text('SELECT url_hash FROM onlyoffice_callbacks WHERE session_id=:sid AND event_hash=:event'),
+                                     {'sid':sid, 'event':'failure:'+event}).scalar()
+            if failed_head is not None and failed_head != 'head:'+(latest or ''):
+                raise HTTPException(409, 'Draft changed; reopen before saving')
             if status == 6 and (type(signed.get('forcesavetype')) is not int or signed['forcesavetype'] not in (0,1,2,3)): raise HTTPException(400, 'Invalid force-save type')
             url = signed.get('url')
             if not isinstance(url, str): raise HTTPException(400, 'Invalid document URL')
-            content = svc.fetch(url, server)
+            try:
+                content = svc.fetch(url, server)
+            except HTTPException as exc:
+                if exc.status_code != 503:
+                    raise
+                # Record the authenticated attempt separately from its event key:
+                # a later delivery of the same callback must still be retried.
+                db.execute(text('INSERT OR IGNORE INTO onlyoffice_callbacks VALUES (:sid,:event,:status,NULL,:head)'),
+                           {'sid':sid, 'event':'failure:'+event, 'status':status, 'head':'head:'+(latest or '')})
+                db.commit()
+                return JSONResponse({'error':1}, status_code=503)
             digest = hashlib.sha256(content).hexdigest(); url_hash = hashlib.sha256(url.encode()).hexdigest()
             previous = db.execute(text('SELECT digest FROM onlyoffice_callbacks WHERE session_id=:sid AND url_hash=:url LIMIT 1'), {'sid':sid,'url':url_hash}).scalar()
             if previous and previous != digest: raise HTTPException(409, 'Save URL changed content')

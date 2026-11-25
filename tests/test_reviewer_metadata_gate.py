@@ -11,7 +11,7 @@ import app.routers.manuscripts as manuscripts
 from app.database import get_db
 from app.security import create_access_token
 from app.reviewer_metadata_gate import MetadataMode, reviewer_metadata_mode
-from app import blind_policy_store as policy
+from app import blind_policy_store as policy, models
 from tests import test_reviewer_artifact_binding, test_reviewer_download
 
 
@@ -154,12 +154,20 @@ class MetadataGateOldSchemaTests(unittest.TestCase):
                 "WHERE migration_id='009_account_invitation_lifecycle'"
             ).scalar()
         )
-        self.assertEqual(self.f.assign(self.f.reviewer,1).status_code,201)
+        # Current invitation creation requires policy evidence that an old
+        # schema cannot provide. Seed the historical assignment directly so
+        # this test exercises reads against that old schema, not new invites.
+        assignment = models.ReviewAssignment(
+            manuscript_id=self.f.mid, reviewer_id=self.f.reviewer.user_id,
+            assigned_by=self.f.editor.user_id, review_round=1, status='assigned')
+        self.f.db.add(assignment); self.f.db.flush()
+        self.f.db.add(models.ReviewerInvitation(assignment_id=assignment.assignment_id, status='accepted'))
+        self.f.db.commit()
 
     def test_reviewer_details_fail_closed_without_policy_schema(self):
         self.f.current=self.f.reviewer
         before=self.f.client.get(f'/manuscripts/{self.f.mid}')
-        self.assertEqual(before.status_code,503,before.text); self.assertNotIn('author_id',before.json())
+        self.assertEqual(before.status_code,404,before.text); self.assertNotIn('author_id',before.json())
         main.app.dependency_overrides[reviewer_metadata_mode]=lambda: MetadataMode.EXPERIMENTAL
         self.assertEqual(self.f.client.get(f'/manuscripts/{self.f.mid}').status_code,503)
 

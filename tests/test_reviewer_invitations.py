@@ -13,6 +13,7 @@ class ReviewerInvitationTest(ReviewerDownloadsTest):
         return self.client.post('/assignments/', json={'manuscript_id':self.mid,'reviewer_id':who.user_id,'review_round':self.manuscript.review_round})
 
     def test_invitation_decline_replacement_and_permissions(self):
+        self.select_single_blind_policy()
         self.current = self.author
         denied = self.client.post('/assignments/', json={'manuscript_id':self.mid,'reviewer_id':self.reviewer.user_id,'review_round':1})
         self.assertEqual(denied.status_code, 403)
@@ -35,6 +36,9 @@ class ReviewerInvitationTest(ReviewerDownloadsTest):
         self.assertEqual(self.client.get(f'/assignments/{aid}/download').status_code, 409)
         self.current = chief
         self.assertEqual(self.client.post(f'/eic/manuscripts/{self.mid}/decision', json={'decision':'accept','comments':'No reviewer'}).status_code, 409)
+        # This fixture reuses one Session across HTTP requests; end the failed
+        # decision transaction as the real per-request dependency would.
+        self.db.rollback()
         replacement = self.invite(self.other)
         self.assertEqual(replacement.status_code, 201, replacement.text); bid = replacement.json()['assignment_id']
         self.current = chief
@@ -48,11 +52,18 @@ class ReviewerInvitationTest(ReviewerDownloadsTest):
         self.assertEqual(response.status_code, 201, response.text)
         self.assertEqual(self.db.get(models.ReviewerInvitation, aid).status, 'declined')
 
-    def test_legacy_assignment_remains_accessible(self):
-        result = self.assign(self.reviewer, 1); aid = result.json()['assignment_id']
-        self.db.delete(self.db.get(models.ReviewerInvitation, aid)); self.db.commit()
-        self.current = self.reviewer
-        self.assertEqual(self.client.get(f'/assignments/{aid}/download').content, b'%PDF-first')
+    def test_legacy_assignment_remains_visible_but_cannot_download(self):
+        self.select_single_blind_policy()
+        result = self.assign(self.reviewer, 1)
+        self.assertEqual(result.status_code, 201, result.text)
+        binding = self.db.get(models.ReviewAssignmentFile, result.json()['assignment_id'])
+        legacy = models.ReviewAssignment(manuscript_id=self.mid, reviewer_id=self.other.user_id,
+            assigned_by=self.editor.user_id, review_round=1, status='assigned')
+        self.db.add(legacy); self.db.flush()
+        self.db.add(models.ReviewAssignmentFile(assignment_id=legacy.assignment_id, round_file_id=binding.round_file_id))
+        self.db.commit(); aid = legacy.assignment_id
+        self.current = self.other
+        self.assertEqual(self.client.get(f'/assignments/{aid}/download').status_code, 409)
         item = next(x for x in self.client.get('/assignments/my').json() if x['assignment_id'] == aid)
         self.assertEqual(item['invitation_status'], 'legacy')
 

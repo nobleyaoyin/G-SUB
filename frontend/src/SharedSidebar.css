@@ -24,8 +24,8 @@
   width: 42px;
   height: 42px;
   border-radius: 12px;
-  background: #2563eb;
-  color: #fff;
+  background: var(--brand-gold);
+  color: var(--brand-navy);
   font-size: 24px;
   font-weight: 800;
 }
@@ -49,7 +49,7 @@
 
 .shared-sidebar-user {
   padding: 14px 12px;
-  border: 1px solid #334155;
+  border: 1px solid var(--neutral-ink);
   border-radius: 10px;
 }
 
@@ -88,7 +88,7 @@
   border: 1px solid transparent;
   border-radius: 9px;
   background: transparent;
-  color: #e2e8f0;
+  color: var(--border-soft);
   text-align: left;
   font: inherit;
   font-size: 14px;
@@ -102,6 +102,7 @@
 }
 
 .shared-sidebar-link.is-active {
+  border-color: var(--sidebar-focus);
   background: var(--action-primary);
   color: #fff;
   font-weight: 650;
@@ -118,7 +119,7 @@
 .shared-sidebar-footer {
   margin-top: auto;
   padding-top: 16px;
-  border-top: 1px solid #334155;
+  border-top: 1px solid var(--neutral-ink);
 }
 
 @media (max-width: 768px) {

@@ -16,6 +16,40 @@ from app.routers.manuscripts import ALLOWED_MANUSCRIPT_EXTENSIONS, MAX_MANUSCRIP
 BASE_DIR = DATA_ROOT
 
 
+def _sample_round_snapshot(db, record, manuscript):
+    """Validate the workflow binding before resolving a sample object."""
+    from app import sample_documents
+    if record.manuscript_id != manuscript.manuscript_id or not sample_documents.registered(db, manuscript.manuscript_id):
+        raise HTTPException(409, 'Review file is unavailable')
+    if record.review_round == 1 and record.source_kind == 'initial_editing':
+        confirmation = db.get(PreReviewConfirmation, record.confirmation_id)
+        submission = db.get(InitialEditingSubmission, confirmation.submission_id) if confirmation else None
+        if not (confirmation and submission and confirmation.manuscript_id == manuscript.manuscript_id
+                and confirmation.author_id == manuscript.author_id and confirmation.decision == 'confirm'
+                and submission.manuscript_id == manuscript.manuscript_id and submission.status == 'eic_approved'
+                and confirmation.file_path == submission.file_path == record.file_path):
+            raise HTTPException(409, 'Review file is unavailable')
+        from app import sample_initial_editing
+        row, content = sample_initial_editing.read(db, submission)
+    elif record.review_round > 1 and record.source_kind == 'author_revision' and record.confirmation_id is None:
+        row, content = sample_documents.read_identity(db, manuscript.manuscript_id, record.file_path)
+        if row['review_round'] != record.review_round:
+            raise HTTPException(409, 'Review file is unavailable')
+        from app.submission_snapshot_history import snapshot_rows
+        if not any(item['submission_kind'] == 'peer_revision' and item['review_round'] == record.review_round
+                   and item['file_ref'] == record.file_path and item['file_sha256'] == row['sha256']
+                   for item in snapshot_rows(db, manuscript)):
+            raise HTTPException(409, 'Review file is unavailable')
+    else:
+        raise HTTPException(409, 'Review file is unavailable')
+    extension = '.' + row['file_format']
+    try:
+        validate_manuscript_file('review' + extension, content, historical=True)
+    except HTTPException:
+        raise HTTPException(409, 'Review file is unavailable') from None
+    return ReviewFileSnapshot(content, extension, hashlib.sha256(content).hexdigest())
+
+
 def _round_location(record, manuscript, db):
     if record.manuscript_id != manuscript.manuscript_id:
         raise HTTPException(409, "Review file is unavailable")
@@ -40,6 +74,12 @@ def _round_location(record, manuscript, db):
 
 
 def validate_round_file(record, manuscript, db):
+    if isinstance(record.file_path, str) and record.file_path.startswith('sample:v1/'):
+        _sample_round_snapshot(db, record, manuscript)
+        return None  # Validated in memory; no path may escape the storage boundary.
+    from app import sample_documents
+    if sample_documents.registered(db, manuscript.manuscript_id):
+        raise HTTPException(409, 'Review file is unavailable')
     root, path, allowed = _round_location(record, manuscript, db)
     path = path.resolve()
     if path.parent != root.resolve() or path.suffix.lower() not in allowed or not path.is_file():
@@ -80,6 +120,11 @@ def snapshot_assignment_file(db, assignment, manuscript):
 
 def snapshot_round_file(db, record, manuscript):
     """Snapshot a previously authorized round record; caller owns authorization."""
+    if isinstance(record.file_path, str) and record.file_path.startswith('sample:v1/'):
+        return _sample_round_snapshot(db, record, manuscript)
+    from app import sample_documents
+    if sample_documents.registered(db, manuscript.manuscript_id):
+        raise HTTPException(409, 'Review file is unavailable')
     root, path, allowed = _round_location(record, manuscript, db)
     try:
         if not all(hasattr(os, flag) for flag in ('O_NOFOLLOW', 'O_DIRECTORY', 'O_NONBLOCK')) or os.open not in os.supports_dir_fd:

@@ -41,6 +41,7 @@ class SplitReviewTest(TwoReviewerPolicyTest):
         self.assertTrue(state['can_invite_additional'])
         fourth = models.User(name='Fourth', email='fourth-split@example.test', password_hash='x', role='reviewer')
         self.db.add(fourth); self.db.commit()
+        self.activate_reviewer(fourth); self.db.commit()
         payload = {'manuscript_id': self.mid, 'reviewer_id': self.third.user_id, 'review_round': 1}
         self.current = self.author
         self.assertEqual(self.client.post('/assignments/additional-reviewer', json=payload).status_code, 403)

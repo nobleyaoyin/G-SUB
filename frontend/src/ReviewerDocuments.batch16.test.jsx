@@ -8,6 +8,7 @@ it.each([1,2,3,12])('shows assignment-specific round %s and distinguishes review
  render(<ReviewerDashboard user={{user_id:1,name:'Synthetic'}} token="synthetic" />);
  fireEvent.click(await screen.findByRole('button',{name:'Open manuscript'}));
  expect(screen.getByRole('heading',{name:`Review documents · Round ${round}`})).toBeTruthy();
- expect(screen.getByText(/Reviewed document attachment: unavailable/)).toBeTruthy();
+ expect(screen.getByText(/Review comments and recommendations are submitted separately/)).toBeTruthy();
+ expect(screen.getByRole('region',{name:'Your reviewed documents'})).toBeTruthy();
  expect(screen.getByRole('button',{name:'Download Review File'})).toBeTruthy();
 });

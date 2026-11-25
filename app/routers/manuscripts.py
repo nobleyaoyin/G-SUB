@@ -2,7 +2,7 @@ from typing import Annotated
 
 from pathlib import Path
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 import os
 import tempfile
 import io
@@ -12,13 +12,15 @@ import sqlite3
 import hashlib
 import re
 import xml.etree.ElementTree as ET
-from fastapi import APIRouter, Depends, status, HTTPException, UploadFile, File, Header
+from fastapi import APIRouter, Depends, status, HTTPException, UploadFile, File, Form, Header
 from fastapi.responses import FileResponse, JSONResponse, Response
-from sqlalchemy.orm import Session
-from sqlalchemy import select, update
+from sqlalchemy.orm import Session, object_session
+from sqlalchemy import inspect, select, update, text
 from sqlalchemy.exc import SQLAlchemyError
 from pydantic import BaseModel, Field
 from app import online_versions
+from app.filename_headers import content_disposition, normalize_upload_filename
+from app.controlled_source_authorization import authorize_source, read_bounded_source, source_may_be_controlled, source_path_is_controlled
 
 from app.database import get_db, BASE_DIR
 from app.config import IS_DEMO, guard_demo_path, AI_PRESCREENING_ENABLED
@@ -27,6 +29,7 @@ from app.models import (
     Manuscript,
     User,
     ReviewAssignment,
+    ReviewerInvitationInvalidation,
     Review,
     Notification,
     InitialEditorInvitation,
@@ -44,14 +47,24 @@ from app.models import (
     FormattingSubmission,
     PrototypePublication,
 )
-from app.schemas import ManuscriptCreate, ManuscriptResponse, ManuscriptUpdate, EditorDecision
+from app.schemas import AuthorManuscriptResponse, ManuscriptCreate, ManuscriptResponse, ManuscriptUpdate, EditorDecision
 from app.routers.users import get_current_user, require_role
 from app.reviewer_invitations import not_declined, may_review
 from app.review_progress import review_progress
+from app.participant_tasks import participant_task
 from app.reviewer_metadata_gate import (MetadataMode, MetadataSchemaUnavailable, MetadataAccessDenied,
     ReviewerDetailDTO, ReviewerSingleBlindDetailDTO, ReviewerProgressDTO,
     reviewer_detail_policy, reviewer_metadata_mode, reviewer_metadata_dto)
 from app.blind_review_visibility import ReviewerSingleBlindDTO
+
+def _owner_download_name(db, manuscript, current_user, storage_name):
+    """Original upload names are private to the manuscript owner."""
+    if current_user.role != 'author' or current_user.user_id != manuscript.author_id:
+        return None
+    if not inspect(db.get_bind()).has_table('manuscript_upload_names'):
+        return None
+    return db.execute(text('SELECT original_filename FROM manuscript_upload_names WHERE manuscript_id=:id AND storage_name=:name'),
+                      {'id': manuscript.manuscript_id, 'name': storage_name}).scalar_one_or_none()
 
 def uses_eic_workflow(db: Session, manuscript_id: int) -> bool:
     """Check whether a manuscript belongs to the EIC-controlled workflow."""
@@ -101,6 +114,8 @@ def _online_author_source(db, manuscript_id, user):
     manuscript = db.get(Manuscript, manuscript_id)
     if manuscript is None or user.role != 'author' or manuscript.author_id != user.user_id:
         raise HTTPException(404, 'Manuscript unavailable')
+    from app import sample_documents
+    sample = sample_documents.registered(db, manuscript_id)
     if manuscript.status not in ('draft', 'revision_required', 'initial_revision_required'):
         raise HTTPException(409, 'Document editing is unavailable at this stage')
     round_no = get_current_review_round(db, manuscript) + (manuscript.status == 'revision_required')
@@ -109,6 +124,17 @@ def _online_author_source(db, manuscript_id, user):
         raise HTTPException(409, 'Document editing is unavailable after reviewer assignment')
     if not manuscript.file_path:
         raise HTTPException(404, 'Upload a TXT document first')
+    if sample:
+        row, content = sample_documents.current(db, manuscript)
+        if row['file_format'] != 'txt':
+            raise HTTPException(415, 'Online editing currently supports UTF-8 TXT files only')
+        try:
+            validate_manuscript_file('document.txt', content, historical=True)
+            text_content = content.decode('utf-8')
+        except UnicodeError:
+            raise HTTPException(409, 'Document source unavailable') from None
+        version = hashlib.sha256(manuscript.file_path.encode('utf-8') + b'\0' + content).hexdigest()
+        return manuscript, round_no, None, text_content, version
     path = resolve_manuscript_file_path(manuscript.file_path)
     directory = guard_demo_path(BASE_DIR / 'uploads' / 'manuscripts' / str(manuscript_id)).resolve()
     if path.suffix.lower() != '.txt':
@@ -144,6 +170,12 @@ def online_author_version(manuscript_id: int, version_id: str, current_user: Use
     _, _, directory, _, _ = _online_author_source(db, manuscript_id, current_user)
     row = next((r for r in online_versions.history(db, manuscript_id, current_user.user_id, 'author') if r['version_id'] == version_id), None)
     if row is None: raise HTTPException(404, 'Draft unavailable')
+    from app import sample_documents
+    if sample_documents.registered(db, manuscript_id):
+        _, content = sample_documents.read_identity(db, manuscript_id, row['file_ref'])
+        if online_versions.digest(content) != row['file_sha256']:
+            raise HTTPException(409, 'Saved draft integrity check failed')
+        return Response(content, media_type='text/plain; charset=utf-8', headers={'Cache-Control': 'no-store', 'Content-Disposition': 'attachment; filename="draft.txt"'})
     path = resolve_manuscript_file_path(row['file_ref'])
     if path.is_symlink() or path.parent.resolve() != directory or path.suffix.lower() != '.txt': raise HTTPException(409, 'Draft unavailable')
     path = path.resolve()
@@ -182,6 +214,22 @@ def _validate_author_online_submission(db, manuscript, current_user, expected):
         raise HTTPException(409, 'Selected draft source changed; reopen or upload it before submitting')
 
 
+def _validate_sample_online_submission(db, manuscript, current_user, expected):
+    from app import sample_documents
+    rows = online_versions.history(db, manuscript.manuscript_id, current_user.user_id, 'author')
+    row = next((item for item in rows if item['file_ref'] == manuscript.file_path), None)
+    if row is None:
+        if expected:
+            raise HTTPException(409, 'Selected draft changed; reopen it before submitting')
+        return
+    _, current = sample_documents.current(db, manuscript)
+    token = hashlib.sha256(manuscript.file_path.encode('utf-8') + b'\0' + current).hexdigest()
+    _, source = sample_documents.read_identity(db, manuscript.manuscript_id, row['source_ref'])
+    if (not expected or expected != token or online_versions.digest(current) != row['file_sha256']
+            or online_versions.digest(source) != row['source_sha256']):
+        raise HTTPException(409, 'Selected draft changed or is unrecorded; reopen it before submitting')
+
+
 @router.post('/{manuscript_id}/online-text')
 def save_online_text(manuscript_id: int, data: OnlineTextSave, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
@@ -202,6 +250,11 @@ def save_online_text(manuscript_id: int, data: OnlineTextSave, current_user: Use
             raise HTTPException(409, 'Saved draft integrity check failed')
         if version != data.expected_version:
             raise HTTPException(409, 'Document changed; reopen it before saving')
+        from app import sample_documents
+        if sample_documents.registered(db, manuscript_id):
+            sample_documents.publish(db, manuscript, current_user, round_no, '.txt', content,
+                                     online_source=source_text.encode('utf-8'), change_note=data.change_note)
+            return {'message': 'Version saved'}
         filename = f"round_{round_no}_online_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}_{uuid4().hex}.txt"
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / filename
@@ -231,7 +284,16 @@ def validate_manuscript_file(filename: str, content: bytes, *, historical: bool 
     Validate a manuscript file and return:
     (extension, media_type).
     """
-    extension = Path(filename or "").suffix.lower()
+    if historical:
+        # Historical storage names were accepted under older rules; do not
+        # invalidate their downloads by applying new upload-name policy.
+        extension = Path(filename or "").suffix.lower()
+    else:
+        try:
+            safe_name = normalize_upload_filename(filename)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Choose a file with a valid filename.") from None
+        extension = Path(safe_name).suffix.lower()
 
     if extension not in ALLOWED_MANUSCRIPT_EXTENSIONS:
         raise HTTPException(
@@ -358,6 +420,19 @@ def manuscript_has_file(manuscript: Manuscript) -> bool:
     if not manuscript.file_path:
         return False
 
+    if manuscript.file_path.startswith('sample:v1/'):
+        from app import sample_documents
+        db = object_session(manuscript)
+        if db is None:
+            return False
+        try:
+            if not sample_documents.registered(db, manuscript.manuscript_id):
+                return False
+            sample_documents.current(db, manuscript)
+            return True
+        except HTTPException:
+            return False
+
     file_path = resolve_manuscript_file_path(manuscript.file_path)
 
     return (
@@ -369,6 +444,9 @@ def manuscript_file_type(manuscript: Manuscript) -> str | None:
     """Return the extension of an existing supported manuscript file."""
     if not manuscript.file_path:
         return None
+
+    if manuscript.file_path.startswith('sample:v1/'):
+        return Path(manuscript.file_path).suffix.lower().lstrip('.') if manuscript_has_file(manuscript) else None
 
     file_path = resolve_manuscript_file_path(manuscript.file_path)
     extension = file_path.suffix.lower()
@@ -427,11 +505,12 @@ def can_access_manuscript(
     # Editors need an accepted initial editor invitation,
     # or an existing peer-review assignment made by them.
     if user.role == "editor":
+        from app.editor_invitation_revocation import is_revoked
         final_invitation = db.scalar(select(FinalEditorInvitation.invitation_id).where(
             FinalEditorInvitation.manuscript_id == manuscript.manuscript_id,
             FinalEditorInvitation.editor_id == user.user_id,
             FinalEditorInvitation.status == 'accepted').limit(1))
-        if final_invitation is not None:
+        if final_invitation is not None and not is_revoked(db,'final',final_invitation):
             return True
         invitation = db.scalar(
             select(InitialEditorInvitation.invitation_id)
@@ -444,7 +523,7 @@ def can_access_manuscript(
             .limit(1)
         )
 
-        if invitation is not None:
+        if invitation is not None and not is_revoked(db,'initial',invitation):
             return True
 
         assignment = db.scalar(
@@ -559,6 +638,8 @@ def submit_draft_manuscript(
     manuscript_id: int,
     expected_online_version: str | None = None,
     selected_docx_version: str | None = None,
+    expected_submission_revision: int | None = Header(default=None, alias="X-Expected-Submission-Revision", ge=0),
+    submission_request_id: UUID | None = Header(default=None, alias='X-Submission-Request-ID'),
     current_user: User = Depends(require_role("author")),
     db: Session = Depends(get_db)
 ):
@@ -568,16 +649,38 @@ def submit_draft_manuscript(
         raise HTTPException(status_code=404, detail="Manuscript not found")
     if manuscript.author_id != current_user.user_id:
         raise HTTPException(status_code=403, detail="You can only submit your own drafts")
+    if submission_request_id is not None:
+        _require_upload_request_schema(db)
+        try:
+            existing = db.execute(text('SELECT manuscript_id, author_id FROM manuscript_submission_requests WHERE request_id=:id'), {'id': str(submission_request_id)}).mappings().first()
+        except SQLAlchemyError:
+            raise HTTPException(503, 'Submission recovery is unavailable.') from None
+        if existing is not None:
+            if existing['manuscript_id'] != manuscript_id or existing['author_id'] != current_user.user_id:
+                raise HTTPException(409, 'This submission request conflicts with another manuscript.')
+            if manuscript.status == 'draft':
+                raise HTTPException(503, 'Submission information is inconsistent.')
+            db.rollback()
+            return manuscript_to_response(manuscript)
+    from app import sample_documents
+    sample = sample_documents.registered(db, manuscript_id)
     if manuscript.status != "draft":
         raise HTTPException(status_code=409, detail="Only draft manuscripts can be submitted")
+    from app.author_submission_integration import validate_linked_submission
+    validate_linked_submission(db, manuscript, expected_submission_revision)
     if not manuscript.title.strip() or not manuscript.abstract.strip():
         raise HTTPException(status_code=409, detail="Title and abstract are required")
     if not manuscript_has_file(manuscript):
+        from app.author_submission_integration import linked_draft
+        if linked_draft(db, manuscript_id) is not None:
+            raise HTTPException(status_code=422, detail={"code": "submission_validation", "errors": [{"step": 5, "field": "manuscript_file", "message": "Upload the manuscript file."}]})
         raise HTTPException(
             status_code=409,
             detail="A PDF, DOCX, DOC, or TXT manuscript file is required before submission",
         )
 
+    if sample and (AI_PRESCREENING_ENABLED or selected_docx_version):
+        raise HTTPException(503, 'Sample submission with AI or DOCX online drafts is not yet available')
     if selected_docx_version and expected_online_version:
         raise HTTPException(status_code=409, detail="Select one draft only")
 
@@ -591,28 +694,35 @@ def submit_draft_manuscript(
             selected_docx_version,
             get_current_review_round(db, manuscript),
         )
+    elif sample:
+        _validate_sample_online_submission(db, manuscript, current_user, expected_online_version)
     else:
         _validate_author_online_submission(
             db, manuscript, current_user, expected_online_version
         )
 
     manuscript.status = "submitted"
+    if submission_request_id is not None:
+        db.execute(text('INSERT INTO manuscript_submission_requests (request_id, manuscript_id, author_id) VALUES (:request, :id, :author)'), {'request': str(submission_request_id), 'id': manuscript_id, 'author': current_user.user_id})
     db.add(ManuscriptReviewPolicy(manuscript_id=manuscript_id, minimum_completed_reviewers=2))
     # There is no manuscript-specific EIC owner at initial submission. Every
     # current EIC can screen submitted manuscripts under existing access rules.
     for eic_id in db.scalars(select(User.user_id).where(User.role == 'eic')).all():
         db.add(Notification(user_id=eic_id, manuscript_id=manuscript_id,
             notification_type='manuscript_submitted', message='A manuscript was submitted for initial screening.', is_read=False))
-    try_create_submission_job(
-        db,
-        enabled=AI_PRESCREENING_ENABLED,
-        manuscript_id=manuscript_id,
-        submitted_by=current_user.user_id,
-        submission_kind="initial",
-        review_round=get_current_review_round(db, manuscript),
-        stored_path=manuscript.file_path,
-        resolve_path=resolve_manuscript_file_path,
-    )
+    if sample:
+        sample_documents.record_submission(db, manuscript, current_user, 'initial', get_current_review_round(db, manuscript))
+    else:
+        try_create_submission_job(
+            db,
+            enabled=AI_PRESCREENING_ENABLED,
+            manuscript_id=manuscript_id,
+            submitted_by=current_user.user_id,
+            submission_kind="initial",
+            review_round=get_current_review_round(db, manuscript),
+            stored_path=manuscript.file_path,
+            resolve_path=resolve_manuscript_file_path,
+        )
     db.commit()
     db.refresh(manuscript)
     return manuscript_to_response(manuscript)
@@ -838,7 +948,7 @@ def get_editor_dashboard_summary(
 
 @router.get(
     "/my",
-    response_model=list[ManuscriptResponse],
+    response_model=list[AuthorManuscriptResponse],
     summary="Get My Manuscripts"
 )
 def get_my_manuscripts(
@@ -851,7 +961,10 @@ def get_my_manuscripts(
         .order_by(Manuscript.manuscript_id)
     ).all()
 
-    return [manuscript_to_response(item) for item in manuscripts]
+    links = {}
+    if inspect(db.get_bind()).has_table('author_submission_links'):
+        links = dict(db.execute(text('SELECT l.manuscript_id, l.draft_id FROM author_submission_links l JOIN author_submission_drafts d ON d.id = l.draft_id WHERE d.author_id = :author'), {'author': current_user.user_id}).all())
+    return [AuthorManuscriptResponse(**manuscript_to_response(item).model_dump(), submission_draft_id=links.get(item.manuscript_id)) for item in manuscripts]
 
 PROGRESS_STAGES = (
     "Submission",
@@ -862,6 +975,7 @@ PROGRESS_STAGES = (
     "Author Agreement",
     "Final Editing",
     "Formatting",
+    "Proofing",
     "Publication",
 )
 
@@ -895,6 +1009,20 @@ INITIAL_EDITING_STEPS = (
     "Pre-review Author Confirmation",
 )
 
+# These labels describe only an already-validated completion event. They carry
+# no names, comments, paths, decisions or transfer information.
+PROGRESS_COMPLETION_MILESTONES = {
+    'Submission': 'Submission recorded',
+    'Initial Screening': 'Initial screening passed',
+    'Peer Review': 'Current-round review requirements met',
+    'EIC Decision': 'Current-round editorial decision recorded',
+    'Author Agreement': 'Author agreement accepted',
+    'Final Editing': 'Final editing approvals recorded',
+    'Formatting': 'Formatted proof submitted',
+    'Proofing': 'Proof approvals recorded',
+    'Publication': 'Prototype publication recorded',
+}
+
 
 def progress_completion_evidence(db: Session, manuscript: Manuscript, current_stage: str | None) -> set[str]:
     """Project only recorded completion; never infer history from a later status."""
@@ -903,7 +1031,7 @@ def progress_completion_evidence(db: Session, manuscript: Manuscript, current_st
     preceding = set(PROGRESS_STAGES[:PROGRESS_STAGES.index(current_stage)])
     mid = manuscript.manuscript_id
     complete = set()
-    if 'Submission' in preceding and (db.get(ManuscriptReviewPolicy, mid) is not None or manuscript.status == 'submitted'):
+    if 'Submission' in preceding and db.get(ManuscriptReviewPolicy, mid) is not None:
         complete.add('Submission')
     if 'Initial Screening' in preceding:
         latest_scan = db.scalar(select(EICInitialScan).where(EICInitialScan.manuscript_id == mid).order_by(EICInitialScan.scan_id.desc()).limit(1))
@@ -946,6 +1074,8 @@ def progress_completion_evidence(db: Session, manuscript: Manuscript, current_st
             FormattingSubmission.author_reviewed_at.is_not(None), FormattingSubmission.eic_reviewed_at.is_not(None),
             FormattingSubmission.eic_id.is_not(None)).limit(1))
         if proof is not None: complete.add('Formatting')
+    if 'Proofing' in preceding and 'Formatting' in complete:
+        complete.add('Proofing')
     return complete
 
 
@@ -1020,7 +1150,10 @@ def initial_editing_progress(db: Session, manuscript_id: int) -> list[dict]:
             if confirmation is None:
                 states["Pre-review Author Confirmation"] = "current"
             elif confirmation.decision == "confirm":
-                states["Pre-review Author Confirmation"] = "completed"
+                manuscript = db.get(Manuscript, manuscript_id)
+                if (manuscript and confirmation.author_id == manuscript.author_id
+                        and confirmation.file_path and confirmation.file_path == latest.file_path):
+                    states["Pre-review Author Confirmation"] = "completed"
             # A rejected version is not considered completed.
 
     return [
@@ -1096,7 +1229,15 @@ def get_manuscript_progress(
         assignments = db.scalars(select(ReviewAssignment).where(ReviewAssignment.manuscript_id == manuscript_id,
             ReviewAssignment.reviewer_id == current_user.user_id, ReviewAssignment.review_round == manuscript.review_round,
             ReviewAssignment.status.in_(['assigned', 'completed']))).all()
-        if manuscript.status not in ('ready_for_peer_review', 'revised') or not any(may_review(db, assignment) for assignment in assignments):
+        try:
+            ledger_available = inspect(db.connection()).has_table('reviewer_invitation_invalidations')
+            authorized = ledger_available and any(
+                may_review(db, assignment) and not db.scalar(select(ReviewerInvitationInvalidation.invalidation_id).where(
+                    ReviewerInvitationInvalidation.assignment_id == assignment.assignment_id).limit(1))
+                for assignment in assignments)
+        except SQLAlchemyError:
+            raise HTTPException(503, 'Progress unavailable', headers={'Cache-Control': 'no-store'}) from None
+        if manuscript.status not in ('ready_for_peer_review', 'revised') or not authorized:
             raise HTTPException(404, 'Manuscript not found')
     elif not protected_reviewer and not can_access_manuscript(db, manuscript, current_user):
         formatting_access = False
@@ -1125,13 +1266,62 @@ def get_manuscript_progress(
     status_value = manuscript.status
     current_info = PROGRESS_STATUS_MAP.get(status_value)
     stage = current_info[0] if current_info else None
+    # Fail closed when the current formatting evidence is incomplete or
+    # inconsistent. This is a read-only projection; no statuses are changed.
+    proof_submitted = False
+    formatting_substage = None
+    if status_value == 'formatting':
+        from app.routers.formatting import latest_final, ready_final
+        proof = db.scalar(select(FormattingSubmission).where(
+            FormattingSubmission.manuscript_id == manuscript_id
+        ).order_by(FormattingSubmission.submission_id.desc()).limit(1))
+        final = latest_final(db, manuscript_id)
+        current_invitation = (db.get(FormatterInvitation, proof.invitation_id) if proof else db.scalar(
+            select(FormatterInvitation).where(FormatterInvitation.manuscript_id == manuscript_id)
+            .order_by(FormatterInvitation.invitation_id.desc()).limit(1)))
+        active_proofs = db.scalars(select(FormattingSubmission.submission_id).where(
+            FormattingSubmission.manuscript_id == manuscript_id,
+            FormattingSubmission.status.in_(['pending_author', 'pending_eic', 'approved'])
+        ).limit(2)).all()
+        bound = bool(current_invitation and current_invitation.manuscript_id == manuscript_id
+            and ready_final(final) and current_invitation.final_submission_id == final.submission_id
+            and len(active_proofs) <= 1 and (not active_proofs or (proof and proof.submission_id == active_proofs[0])))
+        evidence = None
+        if bound:
+            if proof is None and current_invitation.status in ('pending', 'accepted', 'declined'):
+                evidence = {'pending': 'formatter_invited', 'accepted': 'awaiting_formatted_proof',
+                            'declined': 'formatter_declined'}[current_invitation.status]
+            elif proof and current_invitation.status == 'accepted':
+                if proof.status == 'pending_author' and not proof.author_reviewed_at and not proof.eic_reviewed_at and not proof.eic_id:
+                    evidence = 'pending_author'
+                elif proof.status == 'pending_eic' and proof.author_reviewed_at and not proof.eic_reviewed_at and not proof.eic_id:
+                    evidence = 'pending_eic'
+                elif proof.status == 'approved' and proof.author_reviewed_at and proof.eic_reviewed_at and proof.eic_id:
+                    evidence = 'approved'
+                elif proof.status == 'author_revision_requested' and proof.author_reviewed_at and not proof.eic_reviewed_at and not proof.eic_id:
+                    evidence = 'author_revision_requested'
+                elif proof.status == 'eic_revision_requested' and proof.author_reviewed_at and proof.eic_reviewed_at and proof.eic_id:
+                    evidence = 'eic_revision_requested'
+        proof_submitted = evidence in ('pending_author', 'pending_eic', 'approved')
+        stage = 'Proofing' if proof_submitted else 'Formatting' if evidence else None
+        permitted = current_user.role in ('author', 'eic') or bool(
+            current_user.role in ('editor', 'formatter') and current_invitation
+            and current_invitation.formatter_id == current_user.user_id
+            and current_invitation.status == 'accepted')
+        if permitted:
+            formatting_substage = evidence
     action = current_info[1] if current_info else (
         "Revise and resubmit the manuscript."
         if status_value == "revision_required"
         else "Consult the editorial team."
     )
 
+    if status_value == 'formatting' and stage is None:
+        action = 'Formatting progress is unavailable because its evidence is incomplete.'
+
     complete = progress_completion_evidence(db, manuscript, stage)
+    if stage == 'Proofing' and proof_submitted:
+        complete.add('Formatting')
     publication_verified = False
     if status_value == "published":
         publication_verified = db.scalar(
@@ -1165,14 +1355,27 @@ def get_manuscript_progress(
         item = {"name": name, "state": state}
         if name == "Initial Editing" and current_user.role in ("author", "eic"):
             item["steps"] = initial_editing_progress(db, manuscript_id)
+        elif name == 'Proofing' and stage == 'Proofing' and current_user.role in ('author', 'eic'):
+            author_state = 'completed' if proof.author_reviewed_at else ('current' if proof.status == 'pending_author' else 'unknown')
+            eic_state = 'completed' if proof.eic_reviewed_at and proof.eic_id else ('current' if proof.status == 'pending_eic' and proof.author_reviewed_at else 'unknown')
+            item['steps'] = [{'name': 'Author proof review', 'state': author_state},
+                             {'name': 'EIC proof review', 'state': eic_state}]
+        elif name in PROGRESS_COMPLETION_MILESTONES and current_user.role in ('author', 'eic'):
+            recorded = name in complete or (name == 'Publication' and publication_verified)
+            item['steps'] = [{'name': PROGRESS_COMPLETION_MILESTONES[name],
+                              'state': 'completed' if recorded else 'unknown'}]
         stages.append(item)
 
+    task = (participant_task(db, manuscript, current_user, stage)
+            if stage is not None or status_value != 'formatting' else
+            {'task_state': 'unavailable', 'task_message': action, 'relevant_stage': None,
+             'action_label': None, 'permitted_action_target': None})
     if current_user.role == 'reviewer':
         # The same neutral projection is safe for both policies and unresolved cases.
         reviewer_progress = ReviewerProgressDTO(
             manuscript_id=manuscript.manuscript_id, status=status_value,
             review_round=get_current_review_round(db, manuscript), current_stage=stage,
-            next_action=action, stages=[{'name': item['name'], 'state': item['state']} for item in stages],
+            next_action=action, stages=[{'name': item['name'], 'state': item['state']} for item in stages], participant_task=task,
         )
         return JSONResponse(content=reviewer_progress.model_dump(mode='json'), headers={'Cache-Control': 'no-store', 'Pragma': 'no-cache'})
     result = {
@@ -1182,11 +1385,35 @@ def get_manuscript_progress(
         "review_round": get_current_review_round(db, manuscript),
         "current_stage": stage,
         "next_action": action,
+        "participant_task": task,
         "stages": stages,
     }
+    if status_value == 'formatting' and current_user.role in ('author', 'eic', 'editor', 'formatter'):
+        result['formatting_substage'] = formatting_substage
     if current_user.role == 'formatter' and metadata_mode is MetadataMode.EXPERIMENTAL:
         return JSONResponse(content=result, headers={'Cache-Control': 'no-store', 'Pragma': 'no-cache'})
     return result
+
+
+@router.get("/{manuscript_id}/timeline", summary="Get role-filtered manuscript activity")
+def get_manuscript_timeline(
+    manuscript_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+    metadata_mode: MetadataMode = Depends(reviewer_metadata_mode),
+):
+    # Reuse the same role/assignment/policy gate as the progress projection.
+    get_manuscript_progress(manuscript_id, current_user, db, metadata_mode)
+    from app.manuscript_timeline import role_timeline, reviewer_timeline_assignments
+    manuscript = db.get(Manuscript, manuscript_id)
+    if current_user.role == 'reviewer':
+        try:
+            if not reviewer_timeline_assignments(db, manuscript, current_user):
+                raise HTTPException(404, 'Manuscript not found')
+        except SQLAlchemyError:
+            raise HTTPException(503, 'Activity history unavailable') from None
+    return JSONResponse({'manuscript_id': manuscript_id, 'events': role_timeline(db, manuscript, current_user),
+                         'partial_history': True}, headers={'Cache-Control': 'no-store', 'Pragma': 'no-cache'})
 
 
 @router.get(
@@ -1320,6 +1547,10 @@ def update_manuscript(
 
     # Update only the provided fields
     changes = update_data.model_dump(exclude_unset=True)
+
+    from app.author_submission_integration import linked_draft
+    if changes and linked_draft(db, manuscript_id) is not None:
+        raise HTTPException(status_code=409, detail="Edit this manuscript through its submission draft.")
 
     if expected_metadata_sha256 is not None:
         if len(changes) != 1 or not re.fullmatch(r"[0-9a-f]{64}", expected_metadata_sha256):
@@ -1568,6 +1799,8 @@ def resubmit_manuscript(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only resubmit your own manuscripts"
         )
+    from app import sample_documents
+    sample = sample_documents.registered(db, manuscript_id)
 
     # Step 3: Only manuscripts requiring revision can be resubmitted
     if manuscript.status != "revision_required":
@@ -1575,7 +1808,12 @@ def resubmit_manuscript(
             status_code=status.HTTP_409_CONFLICT,
             detail="Manuscript does not require revision"
         )
-    _validate_author_online_submission(db, manuscript, current_user, expected_online_version)
+    if sample and (AI_PRESCREENING_ENABLED or selected_docx_version):
+        raise HTTPException(503, 'Sample revision with AI or DOCX online drafts is unavailable')
+    if sample:
+        _validate_sample_online_submission(db, manuscript, current_user, expected_online_version)
+    else:
+        _validate_author_online_submission(db, manuscript, current_user, expected_online_version)
 
     if selected_docx_version:
         if expected_online_version: raise HTTPException(409, 'Select one draft only')
@@ -1585,32 +1823,39 @@ def resubmit_manuscript(
     # Require a new PDF for the upcoming review round.
     next_round = get_current_review_round(db, manuscript) + 1
 
-    upload_dir = guard_demo_path(BASE_DIR / "uploads" / "manuscripts" / str(manuscript_id))
-
-    current_pdf = (
-        resolve_manuscript_file_path(manuscript.file_path)
-        if manuscript.file_path
-        else None
-    )
-
-    if (
-        current_pdf is None
-        or not current_pdf.is_file()
-        or current_pdf.parent.resolve() != upload_dir.resolve()
-        or current_pdf.suffix.lower() not in ALLOWED_MANUSCRIPT_EXTENSIONS
-        or not current_pdf.name.startswith(f"round_{next_round}_")
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Upload a revised PDF, DOCX, DOC, or TXT file before resubmitting"
-        )
-
-    try:
-        with current_pdf.open("rb") as revised_file:
-            revised_content = revised_file.read(MAX_MANUSCRIPT_FILE_SIZE + 1)
-    except OSError:
-        raise HTTPException(status_code=409, detail="Revised manuscript file is unavailable")
-    validate_manuscript_file(current_pdf.name, revised_content, historical=True)
+    if sample:
+        from app.submission_snapshot_history import snapshot_rows
+        decision = db.scalar(select(EICDecision).where(EICDecision.manuscript_id == manuscript_id,
+            EICDecision.review_round == next_round - 1, EICDecision.decision == 'revision_required')
+            .order_by(EICDecision.decision_id.desc()).limit(1))
+        version, revised_content = sample_documents.current(db, manuscript)
+        prior = snapshot_rows(db, manuscript)
+        try:
+            uploaded_at = datetime.fromisoformat(version['created_at'])
+            decided_at = decision.decided_at if decision else None
+            if uploaded_at.tzinfo is None or decided_at is None:
+                raise ValueError('Missing decision evidence')
+            if decided_at.tzinfo is None:
+                decided_at = decided_at.replace(tzinfo=timezone.utc)
+            if (version['review_round'] != next_round or uploaded_at <= decided_at or not prior
+                    or prior[-1]['file_ref'] == version['storage_identity']):
+                raise ValueError('Revision is not new')
+            validate_manuscript_file('revision.' + version['file_format'], revised_content, historical=True)
+        except (TypeError, ValueError, HTTPException):
+            raise HTTPException(409, 'A new authorized round revision is required') from None
+    else:
+        upload_dir = guard_demo_path(BASE_DIR / "uploads" / "manuscripts" / str(manuscript_id))
+        current_pdf = resolve_manuscript_file_path(manuscript.file_path) if manuscript.file_path else None
+        if (current_pdf is None or not current_pdf.is_file() or current_pdf.parent.resolve() != upload_dir.resolve()
+                or current_pdf.suffix.lower() not in ALLOWED_MANUSCRIPT_EXTENSIONS
+                or not current_pdf.name.startswith(f"round_{next_round}_")):
+            raise HTTPException(status_code=409, detail="Upload a revised PDF, DOCX, DOC, or TXT file before resubmitting")
+        try:
+            with current_pdf.open("rb") as revised_file:
+                revised_content = revised_file.read(MAX_MANUSCRIPT_FILE_SIZE + 1)
+        except OSError:
+            raise HTTPException(status_code=409, detail="Revised manuscript file is unavailable")
+        validate_manuscript_file(current_pdf.name, revised_content, historical=True)
 
     # Step 4: Update manuscript fields
     changes = update_data.model_dump(exclude_unset=True)
@@ -1664,16 +1909,15 @@ def resubmit_manuscript(
                 notification_type='revision_submitted', message=f'A revised manuscript was submitted for round {next_round}.', is_read=False))
 
     # Step 6: Save changes
-    try_create_submission_job(
-        db,
-        enabled=AI_PRESCREENING_ENABLED,
-        manuscript_id=manuscript_id,
-        submitted_by=current_user.user_id,
-        submission_kind="peer_revision",
-        review_round=get_current_review_round(db, manuscript),
-        stored_path=manuscript.file_path,
-        resolve_path=resolve_manuscript_file_path,
-    )
+    if sample:
+        sample_documents.record_submission(db, manuscript, current_user, 'peer_revision', get_current_review_round(db, manuscript))
+    else:
+        try_create_submission_job(
+            db, enabled=AI_PRESCREENING_ENABLED, manuscript_id=manuscript_id,
+            submitted_by=current_user.user_id, submission_kind="peer_revision",
+            review_round=get_current_review_round(db, manuscript), stored_path=manuscript.file_path,
+            resolve_path=resolve_manuscript_file_path,
+        )
     db.commit()
     db.refresh(manuscript)
 
@@ -1681,13 +1925,86 @@ def resubmit_manuscript(
 
 
 
+def _require_upload_request_schema(db):
+    try:
+        inspector = inspect(db.connection())
+        if not all(inspector.has_table(name) for name in ('schema_migrations', 'manuscript_upload_names', 'manuscript_upload_requests', 'manuscript_submission_requests')):
+            raise HTTPException(503, 'Upload recovery is unavailable.')
+        if db.execute(text("SELECT 1 FROM schema_migrations WHERE migration_id='045_manuscript_upload_requests'")).first() is None:
+            raise HTTPException(503, 'Upload recovery is unavailable.')
+    except SQLAlchemyError:
+        raise HTTPException(503, 'Upload recovery is unavailable.') from None
+
+
+def _upload_receipt(db, manuscript, author_id, request_id):
+    _require_upload_request_schema(db)
+    try:
+        row = db.execute(text('SELECT manuscript_id, author_id, storage_name, original_filename, size, sha256 FROM manuscript_upload_requests WHERE request_id=:id'), {'id': str(request_id)}).mappings().first()
+    except SQLAlchemyError:
+        raise HTTPException(503, 'Upload recovery is unavailable.') from None
+    if row is None:
+        return None
+    if row['manuscript_id'] != manuscript.manuscript_id or row['author_id'] != author_id:
+        raise HTTPException(409, 'This upload request conflicts with another upload.')
+    storage_name = row['storage_name']
+    if not storage_name or Path(storage_name).name != storage_name:
+        raise HTTPException(409, 'Uploaded file is unavailable.')
+    raw_directory = guard_demo_path(BASE_DIR / 'uploads' / 'manuscripts' / str(manuscript.manuscript_id))
+    if raw_directory.is_symlink():
+        raise HTTPException(409, 'Uploaded file is unavailable.')
+    directory = raw_directory.resolve()
+    if directory.parent != guard_demo_path(BASE_DIR / 'uploads' / 'manuscripts').resolve():
+        raise HTTPException(409, 'Uploaded file is unavailable.')
+    path = directory / storage_name
+    if path.parent != directory:
+        raise HTTPException(409, 'Uploaded file is unavailable.')
+    content = read_bounded_source(path, MAX_MANUSCRIPT_FILE_SIZE)
+    if len(content) != row['size'] or hashlib.sha256(content).hexdigest() != row['sha256']:
+        raise HTTPException(409, 'Uploaded file is unavailable.')
+    return {'request_id': str(request_id), 'manuscript_id': manuscript.manuscript_id,
+            'original_filename': row['original_filename'], 'size': row['size'],
+            'sha256': row['sha256'],
+            'is_current': bool(manuscript.file_path and Path(manuscript.file_path).name == storage_name)}
+
+
+@router.get('/{manuscript_id}/upload-recovery')
+def manuscript_upload_recovery_capability(manuscript_id: int, current_user: User = Depends(require_role('author')), db: Session = Depends(get_db)):
+    manuscript = db.get(Manuscript, manuscript_id)
+    if manuscript is None or manuscript.author_id != current_user.user_id:
+        raise HTTPException(404, 'Manuscript not found.')
+    try:
+        inspector = inspect(db.connection())
+        present = inspector.has_table('manuscript_upload_requests')
+        submission_present = inspector.has_table('manuscript_submission_requests')
+        recorded = inspector.has_table('schema_migrations') and db.execute(text("SELECT 1 FROM schema_migrations WHERE migration_id='045_manuscript_upload_requests'")).first() is not None
+        if present != recorded or submission_present != recorded or (recorded and not inspector.has_table('manuscript_upload_names')):
+            raise HTTPException(503, 'Upload recovery is unavailable.')
+        return JSONResponse({'available': present}, headers={'Cache-Control': 'no-store'})
+    except SQLAlchemyError:
+        raise HTTPException(503, 'Upload recovery is unavailable.') from None
+
+
+@router.get('/{manuscript_id}/upload-requests/{request_id}')
+def manuscript_upload_receipt(manuscript_id: int, request_id: UUID, current_user: User = Depends(require_role('author')), db: Session = Depends(get_db)):
+    manuscript = db.get(Manuscript, manuscript_id)
+    if manuscript is None or manuscript.author_id != current_user.user_id:
+        raise HTTPException(404, 'Manuscript not found.')
+    receipt = _upload_receipt(db, manuscript, current_user.user_id, request_id)
+    if receipt is None:
+        raise HTTPException(404, 'Upload request not found.')
+    return JSONResponse(receipt, headers={'Cache-Control': 'no-store'})
+
+
 @router.post("/{manuscript_id}/upload", summary="Upload Manuscript File")
 def upload_manuscript(
     manuscript_id: int,
     file: UploadFile = File(...),
+    request_id: UUID | None = Form(default=None),
     current_user: User = Depends(require_role("author")),
     db: Session = Depends(get_db)
 ):
+    if request_id is not None:
+        _begin_author_submission(db)
     # Step 1: Find the manuscript
     manuscript = db.get(Manuscript, manuscript_id)
 
@@ -1703,6 +2020,29 @@ def upload_manuscript(
             status_code=403,
             detail="You can only upload files to your own manuscripts"
         )
+
+    try:
+        original_name = normalize_upload_filename(file.filename)
+    except ValueError:
+        raise HTTPException(400, 'Choose a file with a valid filename.') from None
+
+    if request_id is not None:
+        existing = _upload_receipt(db, manuscript, current_user.user_id, request_id)
+        if existing is not None:
+            content = file.file.read(MAX_MANUSCRIPT_FILE_SIZE + 1)
+            validate_manuscript_file(file.filename, content)
+            row = db.execute(text('SELECT sha256 FROM manuscript_upload_requests WHERE request_id=:id'), {'id': str(request_id)}).mappings().one()
+            try:
+                matching_name = normalize_upload_filename(existing['original_filename']) == original_name
+            except ValueError:
+                matching_name = False
+            if not matching_name or existing['size'] != len(content) or row['sha256'] != hashlib.sha256(content).hexdigest():
+                raise HTTPException(409, 'This upload request conflicts with another upload.')
+            db.rollback()
+            return existing
+
+    from app import sample_documents
+    sample = sample_documents.registered(db, manuscript_id)
 
     # Step 3: PDFs can be changed only before formal submission or while
     # preparing a revision requested by the editor.
@@ -1747,6 +2087,13 @@ def upload_manuscript(
         content,
     )
 
+    if sample:
+        if request_id is not None:
+            raise HTTPException(503, 'Upload recovery is unavailable for this manuscript.')
+        version = sample_documents.publish(db, manuscript, current_user, review_round, extension, content)
+        return {'manuscript_id': manuscript_id, 'version_id': version,
+                'filename': version + extension, 'message': 'Manuscript file uploaded successfully'}
+
     # Each upload gets a unique filename. Older files remain untouched.
     # Existing legacy uploads/paper.pdf files are also preserved.
     upload_dir = guard_demo_path(BASE_DIR / "uploads" / "manuscripts" / str(manuscript_id))
@@ -1772,16 +2119,29 @@ def upload_manuscript(
             temp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail="Could not save manuscript file")
 
-    previous_path = manuscript.file_path
     manuscript.file_path = str(file_path.relative_to(BASE_DIR))
-
+    commit_attempted = False
     try:
+        # Newer installations may record the original name separately. The
+        # ledger is owner-visible only; old versions remain unnamed.
+        if (inspect(db.get_bind()).has_table('manuscript_upload_names') and original_name
+                and len(original_name) <= 255 and original_name not in ('.', '..')
+                and not re.search(r'[\\/\x00-\x1f\x7f]', original_name)):
+            db.execute(text('INSERT INTO manuscript_upload_names (manuscript_id, storage_name, original_filename) VALUES (:id, :storage, :original)'), {'id': manuscript_id, 'storage': filename, 'original': original_name})
+        if request_id is not None:
+            name = original_name
+            if not name or len(name) > 255 or name in ('.', '..') or re.search(r'[\\/\x00-\x1f\x7f]', name):
+                raise HTTPException(400, 'Choose a file with a valid filename.')
+            db.execute(text('INSERT INTO manuscript_upload_requests (request_id, manuscript_id, author_id, storage_name, original_filename, size, sha256) VALUES (:request, :id, :author, :storage, :name, :size, :digest)'), {'request': str(request_id), 'id': manuscript_id, 'author': current_user.user_id, 'storage': filename, 'name': name, 'size': len(content), 'digest': hashlib.sha256(content).hexdigest()})
+        commit_attempted = True
         db.commit()
         db.refresh(manuscript)
     except Exception:
         db.rollback()
-        manuscript.file_path = previous_path
-        file_path.unlink(missing_ok=True)
+        # A commit exception may occur after the database committed. Never
+        # remove a file once a commit was attempted; reconcile it first.
+        if not commit_attempted:
+            file_path.unlink(missing_ok=True)
         raise
 
     return {
@@ -1827,6 +2187,18 @@ def download_manuscript(
             detail="No PDF file has been uploaded for this manuscript"
         )
 
+    from app import sample_documents
+    sample = sample_documents.registered(db, manuscript_id)
+    if sample:
+        row, content = sample_documents.current(db, manuscript)
+        if current_user.role == 'editor' and source_may_be_controlled(db, manuscript_id):
+            authorize_source(db, current_user, manuscript_id, content)
+        return Response(content, media_type=ALLOWED_MANUSCRIPT_EXTENSIONS['.' + row['file_format']],
+                        headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+                                 'Content-Disposition': f'attachment; filename="manuscript_{manuscript_id}.{row["file_format"]}"'})
+    if manuscript.file_path.startswith('sample:v1/'):
+        raise HTTPException(404, 'Document unavailable')
+
     # Step 4: Check if the file exists
     file_path = resolve_manuscript_file_path(manuscript.file_path)
 
@@ -1848,11 +2220,110 @@ def download_manuscript(
             detail="Unsupported manuscript file format",
         )
 
+    if current_user.role == 'editor' and source_may_be_controlled(db, manuscript_id):
+        content = read_bounded_source(file_path, MAX_MANUSCRIPT_FILE_SIZE)
+        decision = authorize_source(db, current_user, manuscript_id, content)
+        if decision.mode != 'legacy':
+            return Response(content, media_type=media_type, headers={
+                'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+                'Content-Disposition': f'attachment; filename="manuscript_{manuscript_id}{extension}"'})
+
+    fallback = f"manuscript_{manuscript_id}{extension}"
+    owner_name = _owner_download_name(db, manuscript, current_user, file_path.name)
     return FileResponse(
         path=file_path,
         media_type=media_type,
-        filename=f"manuscript_{manuscript_id}{extension}",
+        headers={'Content-Disposition': content_disposition(owner_name, fallback)} if owner_name else None,
+        filename=None if owner_name else fallback,
     )
+
+@router.get('/{manuscript_id}/generation-history')
+def author_generation_history(manuscript_id: int, response: Response, current_user: User = Depends(require_role('author')), db: Session = Depends(get_db)):
+    manuscript = db.get(Manuscript, manuscript_id)
+    if not manuscript or manuscript.author_id != current_user.user_id:
+        raise HTTPException(404, 'Manuscript unavailable')
+    from app.author_generation_history import generation_history
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return generation_history(db, manuscript)
+
+
+@router.get('/{manuscript_id}/generation-history/formatting/{submission_id}/download')
+def author_generation_formatting_download(manuscript_id: int, submission_id: int,
+        current_user: User = Depends(require_role('author')), db: Session = Depends(get_db)):
+    manuscript = db.get(Manuscript, manuscript_id)
+    if not manuscript or manuscript.author_id != current_user.user_id:
+        raise HTTPException(404, 'Document unavailable')
+    submission = db.scalar(select(FormattingSubmission).join(FormatterInvitation,
+        FormatterInvitation.invitation_id == FormattingSubmission.invitation_id).where(
+        FormattingSubmission.submission_id == submission_id,
+        FormattingSubmission.manuscript_id == manuscript_id,
+        FormatterInvitation.manuscript_id == manuscript_id, FormatterInvitation.status == 'accepted',
+        FormattingSubmission.status == 'approved', FormattingSubmission.author_reviewed_at.is_not(None),
+        FormattingSubmission.eic_reviewed_at.is_not(None), FormattingSubmission.eic_id.is_not(None)))
+    if not submission:
+        raise HTTPException(404, 'Document unavailable')
+    from app.formatting_artifact_read import read_formatting_artifact
+    content, extension = read_formatting_artifact(submission, manuscript_id, BASE_DIR,
+        ALLOWED_MANUSCRIPT_EXTENSIONS, MAX_MANUSCRIPT_FILE_SIZE, db=db)
+    return Response(content, media_type=ALLOWED_MANUSCRIPT_EXTENSIONS[extension], headers={
+        'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff',
+        'Content-Disposition':f'attachment; filename="approved-document{extension}"'})
+
+
+def read_final_history_file(submission, manuscript_id, base_dir, *, db=None):
+    """Bounded read; legacy final-edit records do not contain a trusted digest."""
+    try:
+        from app import sample_documents
+        if db is not None and sample_documents.registered(db, manuscript_id):
+            from app import sample_stage_artifacts
+            row, content = sample_stage_artifacts.read(db, 'final_editing', submission)
+            return content, '.' + row['file_format']
+        if isinstance(submission.file_path, str) and submission.file_path.startswith('sample:v1/'):
+            raise HTTPException(409, 'Document unavailable')
+        path = guard_demo_path(base_dir / submission.file_path)
+        root = guard_demo_path(base_dir / 'uploads' / 'final_editing' / str(manuscript_id)).resolve()
+        extension = path.suffix.lower()
+        if path.parent.resolve() != root or extension not in ALLOWED_MANUSCRIPT_EXTENSIONS:
+            raise HTTPException(409, 'Document unavailable')
+        content = read_bounded_source(path, MAX_MANUSCRIPT_FILE_SIZE)
+    except HTTPException:
+        raise
+    except (OSError, ValueError, TypeError, RuntimeError):
+        raise HTTPException(409, 'Document unavailable') from None
+    return content, extension
+
+
+@router.get('/{manuscript_id}/generation-history/final-editing/{submission_id}/download')
+def author_generation_final_download(manuscript_id: int, submission_id: int,
+        current_user: User = Depends(require_role('author')), db: Session = Depends(get_db)):
+    manuscript = db.get(Manuscript, manuscript_id)
+    if not manuscript or manuscript.author_id != current_user.user_id:
+        raise HTTPException(404, 'Document unavailable')
+    from app.author_generation_history import approved_final_submissions
+    submission = next((item for item in approved_final_submissions(db, manuscript_id)
+                       if item.submission_id == submission_id), None)
+    if submission is None:
+        raise HTTPException(404, 'Document unavailable')
+    content, extension = read_final_history_file(submission, manuscript_id, BASE_DIR, db=db)
+    return Response(content, media_type=ALLOWED_MANUSCRIPT_EXTENSIONS[extension], headers={
+        'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff',
+        'Content-Disposition':f'attachment; filename="approved-final-document{extension}"'})
+
+
+@router.get('/{manuscript_id}/generation-history/submissions/{snapshot_id}/download')
+def author_generation_submission_download(manuscript_id: int, snapshot_id: str,
+        current_user: User = Depends(require_role('author')), db: Session = Depends(get_db)):
+    manuscript = db.get(Manuscript, manuscript_id)
+    if not manuscript or manuscript.author_id != current_user.user_id:
+        raise HTTPException(404, 'Document unavailable')
+    from app.submission_snapshot_history import read_snapshot
+    content, extension = read_snapshot(db, manuscript, snapshot_id, BASE_DIR,
+        ALLOWED_MANUSCRIPT_EXTENSIONS, MAX_MANUSCRIPT_FILE_SIZE)
+    return Response(content, media_type=ALLOWED_MANUSCRIPT_EXTENSIONS[extension], headers={
+        'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff',
+        'Content-Disposition':f'attachment; filename="submitted-document{extension}"'})
+
 
 # List all saved PDF uploads for a manuscript, including legacy paper.pdf.
 @router.get("/{manuscript_id}/versions", summary="List Manuscript File Versions")
@@ -1877,8 +2348,17 @@ def list_manuscript_versions(
             detail="You do not have permission to view PDF versions"
         )
 
+    from app import sample_documents
+    if sample_documents.registered(db, manuscript_id):
+        return [{'filename': row['version_id'] + '.' + row['file_format'], 'version_id': row['version_id'],
+                 'is_current': manuscript.file_path == row['storage_identity'], 'size_bytes': row['byte_size']}
+                for row in sample_documents.versions(db, manuscript_id)]
+
     upload_dir = guard_demo_path(BASE_DIR / "uploads" / "manuscripts" / str(manuscript_id))
     versions = []
+    original_names = {}
+    if current_user.role == 'author' and current_user.user_id == manuscript.author_id and inspect(db.get_bind()).has_table('manuscript_upload_names'):
+        original_names = dict(db.execute(text('SELECT storage_name, original_filename FROM manuscript_upload_names WHERE manuscript_id=:id'), {'id': manuscript_id}).all())
     if upload_dir.is_dir():
 
         for path in upload_dir.iterdir():
@@ -1891,6 +2371,7 @@ def list_manuscript_versions(
 
             versions.append({
                 "filename": path.name,
+                **({'original_filename': original_names[path.name]} if path.name in original_names else {}),
                 "is_current": (
                     manuscript.file_path is not None
                     and resolve_manuscript_file_path(manuscript.file_path).resolve()
@@ -1940,18 +2421,44 @@ def download_manuscript_version(
             detail="Invalid manuscript filename",
         )
 
+    from app import sample_documents
+    if sample_documents.registered(db, manuscript_id):
+        version = filename.rsplit('.', 1)[0]
+        row, content = sample_documents.read_version(db, manuscript_id, version)
+        if filename != row['version_id'] + '.' + row['file_format']:
+            raise HTTPException(404, 'Document unavailable')
+        if current_user.role == 'editor' and source_may_be_controlled(db, manuscript_id):
+            authorize_source(db, current_user, manuscript_id, content)
+        return Response(content, media_type=ALLOWED_MANUSCRIPT_EXTENSIONS['.' + row['file_format']],
+                        headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+                                 'Content-Disposition': f'attachment; filename="{filename}"'})
+
 
     upload_dir = guard_demo_path(BASE_DIR / "uploads" / "manuscripts" / str(manuscript_id)).resolve()
     file_path = guard_demo_path(upload_dir / filename).resolve()
     if file_path.parent != upload_dir or not file_path.is_file():
         raise HTTPException(status_code=404, detail="PDF version not found")
 
+    if current_user.role == 'editor' and source_may_be_controlled(db, manuscript_id) and (
+        (manuscript.file_path and file_path == resolve_manuscript_file_path(manuscript.file_path).resolve())
+        or source_path_is_controlled(db, manuscript_id, file_path, BASE_DIR)
+    ):
+        content = read_bounded_source(file_path, MAX_MANUSCRIPT_FILE_SIZE)
+        decision = authorize_source(db, current_user, manuscript_id, content)
+        if decision.mode != 'legacy':
+            return Response(content, media_type=ALLOWED_MANUSCRIPT_EXTENSIONS[file_path.suffix.lower()], headers={
+                'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+                'Content-Disposition': f'attachment; filename="{filename}"'})
+
+    fallback = f'manuscript_{manuscript_id}{file_path.suffix.lower()}'
+    owner_name = _owner_download_name(db, manuscript, current_user, filename)
     return FileResponse(
         path=file_path,
         media_type=ALLOWED_MANUSCRIPT_EXTENSIONS[
             file_path.suffix.lower()
         ],
-        filename=filename,
+        headers={'Content-Disposition': content_disposition(owner_name, fallback)} if owner_name else None,
+        filename=None if owner_name else filename,
     )
 
 
@@ -1984,6 +2491,8 @@ def initial_resubmit_manuscript(
             status_code=403,
             detail="You can only resubmit your own manuscript",
         )
+    from app import sample_documents
+    sample = sample_documents.registered(db, manuscript_id)
 
     # Only manuscripts awaiting initial revision are eligible.
     if manuscript.status != "initial_revision_required":
@@ -1991,7 +2500,12 @@ def initial_resubmit_manuscript(
             status_code=409,
             detail="Manuscript does not require initial revision",
         )
-    _validate_author_online_submission(db, manuscript, current_user, expected_online_version)
+    if sample and (AI_PRESCREENING_ENABLED or selected_docx_version):
+        raise HTTPException(503, 'Sample revision with AI or DOCX online drafts is not yet available')
+    if sample:
+        _validate_sample_online_submission(db, manuscript, current_user, expected_online_version)
+    else:
+        _validate_author_online_submission(db, manuscript, current_user, expected_online_version)
 
     if selected_docx_version:
         if expected_online_version: raise HTTPException(409, 'Select one draft only')
@@ -2037,41 +2551,42 @@ def initial_resubmit_manuscript(
             detail="Upload a revised PDF, DOCX, DOC, or TXT file before resubmitting",
         )
 
-    current_file = resolve_manuscript_file_path(manuscript.file_path)
+    if sample:
+        from app.submission_snapshot_history import snapshot_rows
+        version, _ = sample_documents.current(db, manuscript)
+        prior = snapshot_rows(db, manuscript)
+        try:
+            uploaded_at = datetime.fromisoformat(version['created_at'])
+            scan_at = latest_scan.created_at
+            if uploaded_at.tzinfo is None:
+                raise ValueError('Missing timezone')
+            if scan_at.tzinfo is None:
+                scan_at = scan_at.replace(tzinfo=timezone.utc)
+            if (uploaded_at <= scan_at or not prior or prior[-1]['file_ref'] == version['storage_identity']
+                    or version['review_round'] != get_current_review_round(db, manuscript)):
+                raise ValueError('Sample revision is not new')
+        except (TypeError, ValueError):
+            raise HTTPException(409, 'Upload a new revised manuscript before resubmitting') from None
+    else:
+        current_file = resolve_manuscript_file_path(manuscript.file_path)
 
     # Uploaded manuscript files use UTC timestamps in their filenames.
     # The file must belong to this manuscript and be newer
     # than the latest EIC revision request.
-    upload_dir = guard_demo_path(
-        BASE_DIR / "uploads" / "manuscripts" / str(manuscript_id)
-    ).resolve()
-
-    if current_file.parent.resolve() != upload_dir:
-        raise HTTPException(
-            status_code=409,
-            detail="Upload a revised PDF, DOCX, DOC, or TXT file before resubmitting",
-        )
-
-    try:
-        timestamp_text = current_file.name.split("_")[2]
-        upload_time = datetime.strptime(
-            timestamp_text,
-            "%Y%m%dT%H%M%S%fZ",
-        ).replace(tzinfo=timezone.utc)
-
-        scan_time = latest_scan.created_at
-
-        if scan_time.tzinfo is None:
-            scan_time = scan_time.replace(tzinfo=timezone.utc)
-
-        if upload_time <= scan_time:
-            raise ValueError("Manuscript file predates the EIC revision request")
-
-    except (ValueError, IndexError):
-        raise HTTPException(
-            status_code=409,
-            detail="Upload a new revised PDF, DOCX, DOC, or TXT file before resubmitting",
-        )
+    if not sample:
+        upload_dir = guard_demo_path(BASE_DIR / "uploads" / "manuscripts" / str(manuscript_id)).resolve()
+        if current_file.parent.resolve() != upload_dir:
+            raise HTTPException(409, "Upload a revised PDF, DOCX, DOC, or TXT file before resubmitting")
+        try:
+            timestamp_text = current_file.name.split("_")[2]
+            upload_time = datetime.strptime(timestamp_text, "%Y%m%dT%H%M%S%fZ").replace(tzinfo=timezone.utc)
+            scan_time = latest_scan.created_at
+            if scan_time.tzinfo is None:
+                scan_time = scan_time.replace(tzinfo=timezone.utc)
+            if upload_time <= scan_time:
+                raise ValueError("Manuscript file predates the EIC revision request")
+        except (ValueError, IndexError):
+            raise HTTPException(409, "Upload a new revised PDF, DOCX, DOC, or TXT file before resubmitting")
 
     # Update optional manuscript metadata.
     changes = update_data.model_dump(exclude_unset=True)
@@ -2101,16 +2616,15 @@ def initial_resubmit_manuscript(
         )
     )
 
-    try_create_submission_job(
-        db,
-        enabled=AI_PRESCREENING_ENABLED,
-        manuscript_id=manuscript_id,
-        submitted_by=current_user.user_id,
-        submission_kind="initial_revision",
-        review_round=get_current_review_round(db, manuscript),
-        stored_path=manuscript.file_path,
-        resolve_path=resolve_manuscript_file_path,
-    )
+    if sample:
+        sample_documents.record_submission(db, manuscript, current_user, 'initial_revision', get_current_review_round(db, manuscript))
+    else:
+        try_create_submission_job(
+            db, enabled=AI_PRESCREENING_ENABLED, manuscript_id=manuscript_id,
+            submitted_by=current_user.user_id, submission_kind="initial_revision",
+            review_round=get_current_review_round(db, manuscript), stored_path=manuscript.file_path,
+            resolve_path=resolve_manuscript_file_path,
+        )
     db.commit()
     db.refresh(manuscript)
 

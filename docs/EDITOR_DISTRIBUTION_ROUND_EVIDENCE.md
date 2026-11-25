@@ -1,0 +1,15 @@
+# Editor distribution round evidence
+
+Migration 032 is an explicit, forward-only cutover after migrations through 031. Do not apply it to a persistent database without the separately required operational approval and backup. New Manual grants and new policy activation fail closed until the round schema is installed. Existing grants are recorded in a sealed legacy set during migration; their unknown historical round is not invented. Existing pending Automatic intents without captured 032 evidence cannot be processed as new round-bound grants.
+
+Prospective Initial Editor distribution is recorded as **pre-review**, with no numeric Review Round, only while the manuscript is in Initial Editing and no review assignment or Review Round file exists. `Manuscript.review_round` defaults to 1 before peer review and is checked for consistency, not used as proof of an actual Initial round; another value fails closed. Prospective Final Editor distribution records the round of the latest accepted Author Agreement's accepted EIC decision, provided it agrees with the manuscript's current persisted Review Round. Missing or inconsistent evidence fails closed. The intent records this binding at invitation acceptance and the grant records it in the same transaction as grant and provenance creation. The processor checks it again before publishing access. After the cutover, controlled download checks validate the binding and deny changed round evidence.
+
+The migration captures legacy grant identifiers, not invented review rounds, and makes that legacy set immutable. Source, assignment, grant and invitation authorization still apply independently. This is not evidence that an email was sent or a recipient downloaded a file.
+
+## Rollout and pending intent visibility
+
+The supported `scripts/upgrade_automatic_distribution.py DATABASE` command starts at 027 and upgrades through 030. The explicit `--through-rounds` option continues through 031 and 032, including forward-aware 028 validation. It refuses the repository's persistent Main database. This command does not replace the earlier migrations needed to reach 027. Enable round-bound distribution only after the entire 032 cutover is verified on a suitable backup; before 032, prospective policy creation, Manual grants and Automatic capture/processing fail closed. This is not a zero-downtime rollout guarantee.
+
+Pending or failed intents with no 032 binding are displayed as blocked with no retry control. They remain immutable historical records and cannot create a grant. No automatic reconciliation is asserted: the current evidence does not establish the exact round at acceptance for every old intent. Authorized staff must not infer it from a default or current stage.
+
+A prospective Final Editor grant remains bound to its original accepted agreement and decision after a stage change, provided the current round and exact controlled source still match, and all independent invitation, grant and document checks remain valid. A different round, changed source, or revocation does not inherit that access. This rule does not itself authorize unrelated documents.

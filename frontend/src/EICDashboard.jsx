@@ -1,26 +1,31 @@
+import {displayError} from './displayError';
+import './ManuscriptsListLayout.css';
+import {workflowStageLabel, workflowStatusLabel} from './workflowStatus';
+import useStageProjection, {StageProjectionNotice} from './useStageProjection';
+import StageFilterControls, {StageFilterClear} from './StageFilterControls';
+import RoleStatistics from './RoleStatistics';
+import RoleOverview from "./RoleOverview";
+import AuthorNotificationCenter from "./AuthorNotificationCenter";
 import { EICDistribution } from "./DocumentDistribution";
 import useManuscriptReturn from "./useManuscriptReturn";
 import NotesPanel from "./NotesPanel";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_URL, actionFailureMessage, submitAction } from "./api";
 import NotificationBell from "./NotificationBell";
-import FormattingPanel from "./FormattingPanel";
-import BlindReviewPanel from "./BlindReviewPanel";
-import EICReviewPolicyPanel from "./EICReviewPolicyPanel";
 import ManuscriptProgress from "./ManuscriptProgress";
 import GeneralCommentsPanel from "./GeneralCommentsPanel";
 import AIPrescreeningPanel from "./AIPrescreeningPanel";
 import "./EICDashboard.css";
 import { eicPrompt } from "./participantPrompts";
-import EICStageHistory from "./EICStageHistory";
-import { InitialScreeningStageView, InitialEditorAssignmentView, InitialEditingReviewView, PeerReviewStageView, EICDecisionStageView, FinalEditorAssignmentView, FinalEditingReviewView } from "./EICStageViews";
+import EICStageContent, { EICPeerReviewWorkspace, EICFormattingWorkspace } from "./EICStageContent";
 import EICActivityHistory from "./EICActivityHistory";
-import EICWorkQueue from "./EICWorkQueue";
+import EICCandidateVerification from "./EICCandidateVerification";
+import LifecycleAdministrationAccess from "./LifecycleAdministrationAccess";
 import { PAGE_SIZE, statusLabel, statusValue, prepareManuscriptList } from "./eicManuscriptList";
 
-const label = value => (value || "unknown").replaceAll("_", " ");
-const stageNames = ['Submission', 'Initial Screening', 'Initial Editing', 'Peer Review', 'EIC Decision', 'Author Agreement', 'Final Editing', 'Formatting', 'Publication'];
-const stageStateLabels = {completed:'Completed', current:'Current', pending:'Upcoming', unknown:'Unavailable'};
+const label = workflowStatusLabel;
+const workspaceSessionKey = 'gsub-eic-workspace-v1';
+const stageNames = ['Submission', 'Initial Screening', 'Initial Editing', 'Peer Review', 'EIC Decision', 'Author Agreement', 'Final Editing', 'Formatting', 'Proofing', 'Publication'];
 const stageDescriptions = {
   'Submission':'Manuscript information and the submitted document.',
   'Initial Screening':'Initial editorial screening and recorded decisions.',
@@ -30,10 +35,13 @@ const stageDescriptions = {
   'Author Agreement':'Author agreement status.',
   'Final Editing':'Final editor assignment and editing review.',
   'Formatting':'Formatting assignments and document review.',
+  'Proofing':'Review of the submitted formatted proof.',
   'Publication':'Recorded publication information.',
 };
 
-export default function EICDashboard({ user, token, registerManuscriptReturn }) {
+export default function EICDashboard({ user, token, accountControl, registerManuscriptReturn, section, onSectionChange }) {
+  const [notificationSnapshot, setNotificationSnapshot] = useState(null);
+  const receiveNotifications = useCallback(snapshot => setNotificationSnapshot(snapshot), []);
   const [manuscripts, setManuscripts] = useState([]);
   const [editors, setEditors] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -44,14 +52,35 @@ export default function EICDashboard({ user, token, registerManuscriptReturn }) 
   activeToken.current = token;
   const [stageProgress, setStageProgress] = useState(null);
   const currentStageRef = useRef(null);
+  const restoreStageRef = useRef(null);
   const [selectedStage, setSelectedStage] = useState(null);
+  const progressLocationRef = useRef(null);
+  const workspaceLocationRef = useRef(null);
+  const pendingStageNavigation = useRef(null);
+  const revealWorkspace = useCallback(() => {
+    const target = workspaceLocationRef.current;
+    target?.focus({preventScroll: true});
+    target?.scrollIntoView?.({block: 'start'});
+  }, []);
+  useEffect(() => {
+    const pending = pendingStageNavigation.current;
+    if (!pending) return;
+    if (pending.manuscriptId !== selected) { pendingStageNavigation.current = null; return; }
+    if (pending.stage === selectedStage) {
+      pendingStageNavigation.current = null;
+      revealWorkspace();
+    }
+  }, [selected, selectedStage, revealWorkspace]);
   const handleProgress = useCallback(data => {
     if (!data || data.manuscript_id !== selectedRef.current) { setStageProgress(null); return; }
     const current = stageNames.includes(data.current_stage) ? data.current_stage : null;
     const previousCurrent = currentStageRef.current;
     currentStageRef.current = current;
-    setStageProgress({current, stages:Array.isArray(data.stages) ? data.stages : []});
-    setSelectedStage(previous => previous == null || previous === previousCurrent ? current : previous);
+    setStageProgress({current, stages:Array.isArray(data.stages) ? data.stages : [], round:data.review_round, task:data.participant_task});
+    const restored = restoreStageRef.current;
+    if (restored?.manuscriptId === data.manuscript_id) restoreStageRef.current = null;
+    setSelectedStage(previous => restored?.manuscriptId === data.manuscript_id && restored.stage !== null
+      ? restored.stage : previous == null || previous === previousCurrent ? current : previous);
   }, []);
   const [formattingGuidance, setFormattingGuidance] = useState(null);
   const [distributionHistory, setDistributionHistory] = useState(null);
@@ -69,9 +98,6 @@ export default function EICDashboard({ user, token, registerManuscriptReturn }) 
   const [editor, setEditor] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [unreadSummary, setUnreadSummary] = useState(null);
-  const bellRef = useRef(null);
-  const receiveUnread = useCallback(summary => setUnreadSummary(summary), []);
   const [busy, setBusy] = useState(false);
   const [needsRefresh, setNeedsRefresh] = useState(false);
   const [detailDirty, setDetailDirty] = useState(false);
@@ -79,6 +105,8 @@ export default function EICDashboard({ user, token, registerManuscriptReturn }) 
   const actionLock = useRef(false);
   const selectedRef = useRef(null);
   const requestVersion = useRef(0);
+  const restoredToken = useRef(null);
+  const restoringWorkspace = useRef(false);
   const request = useCallback(async (path, options = {}) => {
     const response = await fetch(`${API_URL}${path}`, { ...options, headers: { Authorization: `Bearer ${token}`, ...options.headers } });
     if (!response.ok) {
@@ -118,7 +146,7 @@ export default function EICDashboard({ user, token, registerManuscriptReturn }) 
   }, [token]);
   useEffect(() => { refresh(selectedRef.current).catch(e => setError(e.message)); }, [refresh]);
   useEffect(() => {
-    if (!selected || (overview?.manuscript?.status !== 'formatting' && selectedStage !== 'Publication' && selectedStage !== 'Formatting')) return undefined;
+    if (!selected || (overview?.manuscript?.status !== 'formatting' && !['Publication', 'Formatting', 'Proofing'].includes(selectedStage))) return undefined;
     const controller = new AbortController();
     const id = selected;
     const revision = progressRevision;
@@ -130,19 +158,27 @@ export default function EICDashboard({ user, token, registerManuscriptReturn }) 
   }, [selected, overview?.manuscript?.status, selectedStage, progressRevision, request, token]);
   useEffect(() => {
     const onFocus = () => {
-      if (!busy && (!detailDirty || needsRefresh) && document.visibilityState === "visible") {
+      if (!busy && (!(detailDirty || decision || comments || editor) || needsRefresh) && document.visibilityState === "visible") {
         refresh(selected).then(updated => { if (updated) { setError(""); setNeedsRefresh(false); } }).catch(e => { setNeedsRefresh(true); setError(`Refresh failed: ${e.message}`); });
       }
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [busy, detailDirty, needsRefresh, refresh, selected]);
+  }, [busy, detailDirty, decision, comments, editor, needsRefresh, refresh, selected]);
+  useEffect(() => {
+    if (!selected || !(detailDirty || decision || comments || editor || busy)) return undefined;
+    const onBeforeUnload = event => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [selected, detailDirty, decision, comments, editor, busy]);
   const open = async id => {
-    if (selected !== null && selected !== id && detailDirty && !window.confirm('Discard unsaved editorial changes?')) return;
+    if (busy || actionLock.current) return;
+    if (selected !== null && selected !== id && (detailDirty || decision || comments || editor) && !window.confirm('Discard unsaved editorial changes?')) return;
     selectedRef.current = id;
+    restoreStageRef.current = null;
     const version = ++requestVersion.current;
     currentStageRef.current = null;
-    setSelected(id); setOverview(null); setStageProgress(null); setSelectedStage(null); setFormattingGuidance(null); setDecision(""); setComments(""); setDetailDirty(false);
+    setSelected(id); setOverview(null); setStageProgress(null); setSelectedStage(null); setFormattingGuidance(null); setDecision(""); setComments(""); setEditor(""); setDetailDirty(false);
     if (!needsRefresh) { setError(""); setMessage(""); }
     try {
       const details = await request(`/eic/manuscripts/${id}/overview`);
@@ -154,6 +190,30 @@ export default function EICDashboard({ user, token, registerManuscriptReturn }) 
       if (version === requestVersion.current && selectedRef.current === id && activeToken.current === token) setError(e.message);
     }
   };
+  useEffect(() => {
+    if (!Number.isSafeInteger(user?.user_id) || user.user_id < 1 || restoredToken.current === token) return;
+    restoredToken.current = token;
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(workspaceSessionKey) || 'null');
+      if (saved?.userId !== user.user_id || !Number.isSafeInteger(saved.manuscriptId) || saved.manuscriptId < 1 ||
+          (saved.stage !== null && !stageNames.includes(saved.stage))) return;
+      restoringWorkspace.current = true;
+      open(saved.manuscriptId);
+      restoreStageRef.current = {manuscriptId:saved.manuscriptId, stage:saved.stage};
+      setSelectedStage(saved.stage);
+    } catch { /* Storage is optional; normal list navigation remains available. */ }
+  }, [token, user?.user_id]);
+  useEffect(() => {
+    if (!Number.isSafeInteger(user?.user_id) || user.user_id < 1 || restoredToken.current !== token) return;
+    try {
+      if (selected === null) {
+        if (!restoringWorkspace.current) sessionStorage.removeItem(workspaceSessionKey);
+      } else {
+        restoringWorkspace.current = false;
+        sessionStorage.setItem(workspaceSessionKey, JSON.stringify({userId:user.user_id, manuscriptId:selected, stage:selectedStage}));
+      }
+    } catch { /* Storage is optional; never block the workspace. */ }
+  }, [selected, selectedStage, token, user?.user_id]);
   const act = async (path, payload) => {
     if (actionLock.current || needsRefresh) return;
     actionLock.current = true; setBusy(true); setError(""); setMessage("");
@@ -185,86 +245,91 @@ export default function EICDashboard({ user, token, registerManuscriptReturn }) 
     } catch (e) { setError(e.message); }
   };
   const returnToManuscripts = () => {
+    if (busy || actionLock.current) return false;
     if ((detailDirty || decision || comments || editor) && !window.confirm('Discard unsaved editorial changes?')) return false;
     selectedRef.current = null; requestVersion.current++; setSelected(null); setOverview(null); setDecision(''); setComments(''); setEditor(''); setDetailDirty(false); refresh(null).catch(e => setError(e.message));
     return true;
   };
   useManuscriptReturn(registerManuscriptReturn, returnToManuscripts);
-  const {unique, counts, filtered} = prepareManuscriptList(listOwner === token ? manuscripts : [], search, filter, sortBy, sortDirection);
+  const stageProjection = useStageProjection(listOwner === token ? manuscripts : [], token, filter);
+  const {unique, filtered} = prepareManuscriptList(stageProjection.items, search, filter, sortBy, sortDirection);
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
   const currentPage = Math.min(page, pageCount);
   const pageItems = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   useEffect(() => { if (page > pageCount) setPage(pageCount); }, [page, pageCount]);
   const status = overview?.manuscript.status;
   const round = overview?.manuscript.review_round;
-  const canDecide = Number.isInteger(round) && round > 0 && ["ready_for_peer_review", "revised"].includes(status) && overview?.review_progress?.can_decide === true && Array.isArray(overview?.decisions) && !overview.decisions.some(d => d.review_round === round);
+  const displayedRound = Number.isInteger(round) && round > 0 ? round :
+    Number.isInteger(stageProgress?.round) && stageProgress.round > 0 ? stageProgress.round : 'Unavailable';
+  const roundConflict = Number.isInteger(round) && round > 0 && Number.isInteger(stageProgress?.round) && stageProgress.round !== round;
+  const decisionRoundUnverified = ['ready_for_peer_review', 'revised'].includes(status) && (!Number.isInteger(round) || round < 1 || stageProgress?.round !== round);
+  const canDecide = Number.isInteger(round) && round > 0 && stageProgress?.round === round && ["ready_for_peer_review", "revised"].includes(status) && overview?.review_progress?.can_decide === true && Array.isArray(overview?.decisions) && !overview.decisions.some(d => d.review_round === round);
   const approval = overview?.submissions.filter(s => s.status === "editor_approved") || [];
+  const hasWorkflowComments = Boolean(overview && (
+    overview.scans.some(item => item.comments) ||
+    overview.submissions.some(item => item.comments || item.author_comments || item.editor_comments || item.eic_comments) ||
+    overview.confirmations.some(item => item.comments) || overview.decisions.some(item => item.comments) ||
+    overview.final_submissions.some(item => item.comments)
+  ));
   const activeFinal = overview?.final_invitations.find(i => ["pending", "accepted"].includes(i.status));
   const latestFinal = overview?.final_workflow_submissions[0];
   const currentFormatting = formattingGuidance?.id === selected && formattingGuidance.revision === progressRevision && formattingGuidance.token === token ? formattingGuidance.data : null;
   const nextAction = eicPrompt(overview, needsRefresh || Boolean(error), currentFormatting);
+  const primaryTask = stageProgress?.task;
+  const taskMessage = !needsRefresh && !error && primaryTask?.relevant_stage === stageProgress?.current &&
+    ['action_required', 'waiting', 'no_action'].includes(primaryTask?.task_state) &&
+    typeof primaryTask.task_message === 'string' && primaryTask.task_message.trim()
+    ? primaryTask.task_message : nextAction.text;
+  const selectedTaskMessage = needsRefresh || error ? nextAction.text
+    : roundConflict || decisionRoundUnverified ? 'Review-round information is unavailable or inconsistent. Refresh before acting.'
+    : selectedStage && selectedStage !== stageProgress?.current
+      ? selectedStage === 'EIC Decision' && stageProgress?.current === 'Peer Review' && canDecide
+        ? 'Review the editorial decision controls for the current round.'
+        : 'This stage is being viewed for context; the current workflow task is unchanged.'
+      : taskMessage;
   const chooseStage = stage => {
-    if (!stageNames.includes(stage) || stage === selectedStage) return;
+    if (!stageNames.includes(stage) || busy || actionLock.current) return;
+    if (stage === selectedStage) { revealWorkspace(); return; }
     if ((detailDirty || decision || comments || editor) && !window.confirm('Leave this stage? Unsaved changes may be lost.')) return;
+    restoreStageRef.current = null;
+    setDecision(''); setComments(''); setEditor('');
+    pendingStageNavigation.current = {stage, manuscriptId: selected};
     setSelectedStage(stage);
   };
   return <div className="eic-page">
-    <header><div><h1>EIC Dashboard</h1><p>Welcome, {user.name}</p></div><div ref={bellRef}><NotificationBell token={token} onUnreadSummary={receiveUnread} onNavigate={notification => open(notification.manuscript_id)} /></div></header>
-    {error && <p role="alert" className="eic-error">{error}</p>}{message && <p role="status">{message}</p>}
-    <div className={`eic-grid${selected ? ' is-detail' : ''}`}>{!selected && <section data-sidebar-target="manuscripts" className="eic-listing"><h2>Manuscripts</h2>
+    <header><div><h1>EIC Dashboard</h1><p>Welcome, {user.name}</p></div><div className="dashboard-utilities"><NotificationBell token={token} onNavigate={notification => { onSectionChange?.("manuscripts"); open(notification.manuscript_id); }} onViewAll={onSectionChange ? () => { if (returnToManuscripts() !== false) onSectionChange("notifications"); } : undefined} onAuthorSnapshot={onSectionChange ? receiveNotifications : undefined} />{accountControl}</div></header>
+    {error && <p role="alert" className="eic-error">{displayError(error)}</p>}{message && <p role="status">{message}</p>}
+    <div hidden={section === "notifications"}><LifecycleAdministrationAccess key={`lifecycle-${token}`} token={token} currentUserId={user.user_id} /></div>
+    {section === 'dashboard' && <RoleOverview label="EIC" items={unique} loading={listState === 'loading' || listOwner !== token} error={listState === 'error'} onNavigate={onSectionChange} onOpen={item => { onSectionChange('manuscripts'); open(item.manuscript_id); }} />}
+    {section === 'notifications' && <AuthorNotificationCenter snapshot={notificationSnapshot} token={token} onOpen={item => { onSectionChange('manuscripts'); open(item.manuscript_id); }} onBack={() => onSectionChange('dashboard')} />}
+    <div hidden={Boolean(section && section !== 'manuscripts')}>
+    <div className={`eic-grid${selected ? ' is-detail' : ''}`}>{!selected && <section data-sidebar-target="manuscripts" className="eic-listing"><div className="manuscripts-list-layout"><div className="manuscripts-list-content"><h2>Manuscripts</h2>
       {listState === 'loading' || listOwner !== token && listState !== 'error' ? <p role="status">Loading manuscripts…</p> : listState === 'error' ? <div><p>Unable to load the manuscript list.</p><button type="button" onClick={() => refresh(null).then(() => setError('')).catch(e => setError(e.message))}>Retry manuscript list</button></div> : <>
-      <p className="eic-list-summary">Accessible manuscripts: <strong>{unique.length}</strong> · Matching results: <strong>{filtered.length}</strong></p>
-      <ul className="eic-status-counts" aria-label="Accessible manuscripts by status">{[...counts.keys()].sort((a,b)=>statusLabel(a).localeCompare(statusLabel(b))).map(s => <li key={s}>{statusLabel(s)}: <strong>{counts.get(s)}</strong></li>)}</ul>
       <div className="eic-list-controls"><label>Search <input value={search} onChange={e => {setSearch(e.target.value);setPage(1);}} placeholder="Title or ID" /></label>
       {search && <button type="button" onClick={() => {setSearch('');setPage(1);}}>Clear search</button>}
-      <label>Status <select aria-label="Status" value={filter} onChange={e => {setFilter(e.target.value);setPage(1);}}><option value="">All statuses</option>{[...counts.keys()].sort((a,b)=>statusLabel(a).localeCompare(statusLabel(b))).map(s => <option key={s} value={s}>{statusLabel(s)} ({counts.get(s)})</option>)}</select></label>
+      <StageProjectionNotice projection={stageProjection} /><StageFilterControls value={filter} onChange={value => {setFilter(value);setPage(1);}} items={unique} />
       <label>Sort by <select value={sortBy} onChange={e => {setSortBy(e.target.value);setPage(1);}}><option value="id">Manuscript ID</option><option value="title">Title</option><option value="created_at">Created date</option><option value="status">Status</option></select></label>
-      <button type="button" onClick={() => {setSortDirection(v=>v === 'asc' ? 'desc' : 'asc');setPage(1);}}>Order: {sortDirection === 'asc' ? 'Ascending ↑' : 'Descending ↓'}</button></div>
-      {!filtered.length ? <p>{unique.length ? 'No manuscripts match the current search and filters.' : 'No accessible manuscripts are available.'}</p> : <table className="eic-list-table"><thead><tr><th>Manuscript</th><th>Status</th><th>Created</th></tr></thead><tbody>{pageItems.map(m => <tr key={m.manuscript_id}><td><button type="button" onClick={() => open(m.manuscript_id)}>#{m.manuscript_id} {m.title || 'Title unavailable'}</button></td><td>{statusLabel(statusValue(m))}</td><td>{Number.isFinite(Date.parse(m.created_at)) ? new Date(m.created_at).toLocaleDateString() : 'Unavailable'}</td></tr>)}</tbody></table>}
-      <div className="eic-pagination"><label>Rows per page <select value={pageSize} onChange={e => {setPageSize(Number(e.target.value));setPage(1);}}>{[10, 25, 50].map(size => <option key={size} value={size}>{size}</option>)}</select></label><button type="button" disabled={currentPage === 1} onClick={() => setPage(currentPage-1)}>Previous</button><span>Page {filtered.length ? currentPage : 0} of {filtered.length ? pageCount : 0} · {filtered.length} results</span><button type="button" disabled={!filtered.length || currentPage === pageCount} onClick={() => setPage(currentPage+1)}>Next</button></div>
-      </>}</section>}
-    <main data-workspace={selected ? "selected" : undefined} onChangeCapture={() => { if (selected) setDetailDirty(true); }}>{!selected && <EICWorkQueue items={unique} state={listOwner !== token && listState !== 'error' ? 'loading' : listState} unread={unreadSummary?.token === token ? unreadSummary : null} onOpen={open} onRetry={() => refresh(null).then(() => setError('')).catch(e => setError(e.message))} onOpenNotifications={() => { const button=bellRef.current?.querySelector('.notification-bell'); if (button) { if (button.getAttribute('aria-expanded') !== 'true') button.click(); button.focus(); } }} />}{selected && <button type="button" className="manuscript-back" onClick={() => { if ((detailDirty || decision || comments || editor) && !window.confirm('Discard unsaved editorial changes?')) return; selectedRef.current = null; requestVersion.current++; setSelected(null); setOverview(null); setDecision(''); setComments(''); setEditor(''); setDetailDirty(false); refresh(null).catch(e => setError(e.message)); }}>Back to Manuscripts</button>}{selected && !overview && <p>Loading manuscript details…</p>}{overview && <>
+      <button type="button" onClick={() => {setSortDirection(v=>v === 'asc' ? 'desc' : 'asc');setPage(1);}}>Order: {sortDirection === 'asc' ? 'Ascending ↑' : 'Descending ↓'}</button><StageFilterClear onClear={() => {setSearch('');setFilter('');setSortBy('id');setSortDirection('asc');setPage(1);}} /></div>
+      {stageProjection.loading ? null : !filtered.length && stageProjection.unavailable ? <p>Matching manuscripts cannot be determined until stage information is available.</p> : !filtered.length ? <p>{unique.length ? 'No manuscripts match the current search and filters.' : 'No accessible manuscripts are available.'}</p> : <div className="eic-table-scroll"><table className="eic-list-table"><thead><tr><th scope="col">ID</th><th scope="col">Manuscript</th><th scope="col">Status</th><th scope="col">Created</th></tr></thead><tbody>{pageItems.map(m => <tr key={m.manuscript_id}><td>#{m.manuscript_id}</td><td><button type="button" aria-label={`#${m.manuscript_id} ${m.title || 'Title unavailable'}`} onClick={() => open(m.manuscript_id)}>{m.title || 'Title unavailable'}</button></td><td>{statusLabel(statusValue(m))}</td><td>{Number.isFinite(Date.parse(m.created_at)) ? new Date(m.created_at).toLocaleDateString() : 'Unavailable'}</td></tr>)}</tbody></table></div>}
+      {stageProjection.unavailable && <p>Result counts exclude manuscripts whose stages could not be verified.</p>}<div className="eic-pagination"><label>Rows per page <select value={pageSize} onChange={e => {setPageSize(Number(e.target.value));setPage(1);}}>{[10, 25, 50].map(size => <option key={size} value={size}>{size}</option>)}</select></label><button type="button" disabled={currentPage === 1} onClick={() => setPage(currentPage-1)}>Previous</button>{!stageProjection.loading && !stageProjection.unavailable && <><span aria-live="polite">Page {filtered.length ? currentPage : 0} of {filtered.length ? pageCount : 0} · {filtered.length} results</span><span aria-live="polite">{filtered.length ? `Showing ${(currentPage - 1) * pageSize + 1}–${Math.min(currentPage * pageSize, filtered.length)} of ${filtered.length} matching manuscripts` : "Showing 0 of 0 matching manuscripts"}</span></>}<button type="button" disabled={!filtered.length || currentPage === pageCount} onClick={() => setPage(currentPage+1)}>Next</button></div>
+      </>}</div><aside className="manuscripts-list-sidebar" aria-label="Manuscript statistics"><RoleStatistics items={unique} loading={listState === 'loading' || listOwner !== token} error={listState === 'error'} /></aside></div></section>}
+    {selected && <main className="manuscripts-list-layout" data-workspace={selected ? "selected" : undefined} onChangeCapture={event => { if (selected && !event.target.closest('.eic-workflow')) setDetailDirty(true); }}><aside className="manuscripts-list-sidebar" aria-label="Manuscript statistics"><RoleStatistics items={unique} loading={listState === 'loading' || listOwner !== token} error={listState === 'error'} /></aside><div className="manuscripts-list-content">{selected && <button type="button" className="manuscript-back" onClick={() => { if (busy || actionLock.current) return; if ((detailDirty || decision || comments || editor) && !window.confirm('Discard unsaved editorial changes?')) return; selectedRef.current = null; requestVersion.current++; setSelected(null); setOverview(null); setDecision(''); setComments(''); setEditor(''); setDetailDirty(false); refresh(null).catch(e => setError(e.message)); }}>Back to manuscripts</button>}{selected && !overview && <p>Loading manuscript details…</p>}{overview && <>
       <section className="eic-manuscript-overview">
         <div className="eic-manuscript-heading">
           <div>
             <span className="eic-eyebrow">MANUSCRIPT OVERVIEW</span>
-            <h2>{overview.manuscript.title?.trim() ? `#${selected} ${overview.manuscript.title}` : `Manuscript #${selected}`}</h2>
-            <p>Review the manuscript information and current workflow progress.</p>
+            <h2>{overview.manuscript.title?.trim() || `Manuscript #${selected}`}</h2>
+            {overview.manuscript.title?.trim() && <p className="eic-manuscript-id">Manuscript #{selected}</p>}
           </div>
           <span className={`eic-status-badge ${status}`}>
             {label(status)}
           </span>
         </div>
 
-        <ManuscriptProgress showTitle={false} showNextAction={false} showRound={!(Number.isInteger(round) && round > 0)}
-          key={`progress-${selected}-${progressRevision}`}
-          manuscriptId={selected}
-          token={token}
-          onProgressChange={handleProgress}
-        />
-        <nav className="eic-stage-navigation" aria-label="Manuscript stages">
-          {stageNames.map(name => {
-            const entry = stageProgress?.stages.find(item => item.name === name);
-            const state = Object.hasOwn(stageStateLabels, entry?.state) ? entry.state : 'unknown';
-            return <button type="button" key={name} aria-current={stageProgress?.current === name ? 'step' : undefined} aria-pressed={selectedStage === name} onClick={() => chooseStage(name)}>{name} <small>{stageStateLabels[state]}</small></button>;
-          })}
-        </nav>
-        {!stageProgress?.current && <p role="status">Current workflow stage is unavailable. Select a stage to browse its available information.</p>}
-
-        <div className="eic-manuscript-meta">
-          <p><strong>Review round:</strong> {Number.isInteger(round) && round > 0 ? round : 'Unavailable'}</p>
-          <p><strong>Author:</strong> {overview.manuscript.author}</p>
-          <div className="eic-abstract">
-            <strong>Abstract</strong>
-            <p>{overview.manuscript.abstract}</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => download(`/manuscripts/${selected}/download`)}
-          >
-            Download submitted manuscript
-          </button>
-        </div>
+        <section className="eic-abstract" aria-label="Manuscript Abstract">
+          <h3>Manuscript Abstract</h3>
+          <p>{overview.manuscript.abstract}</p>
+        </section>
       </section>
 
       <details className="eic-context-panel">
@@ -281,7 +346,33 @@ export default function EICDashboard({ user, token, registerManuscriptReturn }) 
         </div>
       </details>
 
-      <EICDistribution key={`${token}-${selected}`} token={token} manuscriptId={selected} overview={overview} formatting={currentFormatting} onHistoryChange={receiveDistributionHistory} />
+      <section className="eic-progress-content">
+        <div ref={progressLocationRef} tabIndex={-1} aria-label="Manuscript Progress navigation">
+        <ManuscriptProgress showTitle={false} showNextAction={false} showRound={false}
+          key={`progress-${selected}-${progressRevision}`}
+          manuscriptId={selected}
+          token={token}
+          onProgressChange={handleProgress}
+          onBrowseStage={chooseStage}
+          selectedStage={selectedStage}
+        />
+        </div>
+        {!stageProgress?.current && <p role="status">Current workflow stage is unavailable. Select a stage to browse its available information.</p>}
+        <div className="eic-manuscript-meta">
+          <p><strong>Review round:</strong> {displayedRound}</p>
+          <p><strong>Author:</strong> {overview.manuscript.author}</p>
+          <button
+            type="button"
+            onClick={() => download(`/manuscripts/${selected}/download`)}
+          >
+            Download submitted manuscript
+          </button>
+        </div>
+      </section>
+
+      <EICCandidateVerification key={`candidate-${token}-${selected}`} manuscriptId={selected} token={token} />
+
+      <EICDistribution key={`${token}-${selected}`} token={token} manuscriptId={selected} overview={overview} formatting={currentFormatting} revision={progressRevision} onHistoryChange={receiveDistributionHistory} />
 
       <div className="eic-ai-section">
         <AIPrescreeningPanel
@@ -291,14 +382,32 @@ export default function EICDashboard({ user, token, registerManuscriptReturn }) 
           revision={progressRevision}
         />
       </div>
-      <section className="eic-workflow" id="eic-current-actions">
+      <section className="eic-workflow" id="eic-current-actions" ref={workspaceLocationRef} tabIndex={-1}>
         <div className="eic-workflow-heading">
           <div>
             <span className="eic-eyebrow">EDITORIAL WORKFLOW</span>
-            <h3>{selectedStage || 'Stage information unavailable'}</h3>
+            <h3>{selectedStage ? workflowStageLabel(selectedStage) : 'Stage information unavailable'}</h3>
             {selectedStage && <p>{stageDescriptions[selectedStage]}</p>}
-            {selectedStage === stageProgress?.current && <p><strong>Next action:</strong> <span>{nextAction.text}</span></p>}
-            {stageProgress?.current === 'Peer Review' && selectedStage === stageProgress?.current && nextAction.action === true && canDecide && !needsRefresh && !error && (
+            <div className="eic-stage-next-action" aria-live="polite">
+              <h4>Next action:</h4>
+              <p>{stageProgress?.current ? selectedTaskMessage : 'Unavailable until the current stage is known.'}</p>
+              {!needsRefresh && !error && !busy && !roundConflict && !decisionRoundUnverified && selectedStage === stageProgress?.current && primaryTask?.task_state === 'action_required' && primaryTask.relevant_stage === selectedStage && (
+                (selectedStage === 'Initial Screening' && primaryTask.action_label === 'View initial screening' && primaryTask.permitted_action_target === `#eic-initial-screening-${selected}`) ||
+                (selectedStage === 'Initial Editing' && primaryTask.action_label === 'View initial editor assignment' && primaryTask.permitted_action_target === `#eic-initial-assignment-${selected}`) ||
+                (selectedStage === 'Peer Review' && ['ready_for_peer_review', 'revised'].includes(status) && overview?.review_progress?.active_assignments === 0 && primaryTask.action_label === 'View review policy' && primaryTask.permitted_action_target === `#eic-reviewer-management-${selected}`) ||
+                (selectedStage === 'Peer Review' && ['ready_for_peer_review', 'revised'].includes(status) && overview?.review_progress?.active_assignments === 0 && primaryTask.action_label === 'View reviewer invitations' && primaryTask.permitted_action_target === `#eic-reviewer-management-${selected}`) ||
+                (selectedStage === 'Initial Editing' && status === 'initial_editing' && approval.length > 0 && primaryTask.action_label === 'View initial editing review' && primaryTask.permitted_action_target === `#eic-initial-review-${selected}`)
+              ) && <a href={primaryTask.permitted_action_target}>{primaryTask.action_label}</a>}
+            </div>
+            {stageProgress?.current === 'Peer Review' && selectedStage === stageProgress?.current && canDecide && !needsRefresh && !error && !busy &&
+              primaryTask?.task_state === 'action_required' && primaryTask.relevant_stage === 'Peer Review' &&
+              primaryTask.action_label === 'View editorial decision' && primaryTask.permitted_action_target === `#eic-decision-${selected}` && (
+              <a href={primaryTask.permitted_action_target} onClick={event => {
+                event.preventDefault();
+                chooseStage('EIC Decision');
+              }}>View editorial decision</a>
+            )}
+            {stageProgress?.current === 'Peer Review' && selectedStage === stageProgress?.current && nextAction.action === true && canDecide && !needsRefresh && !error && !busy && !primaryTask?.permitted_action_target && (
               <button type="button" onClick={() => chooseStage('EIC Decision')}>View editorial decision</button>
             )}
             {selectedStage && selectedStage !== stageProgress?.current && <p>Browsing this stage does not change the manuscript workflow.</p>}
@@ -308,112 +417,19 @@ export default function EICDashboard({ user, token, registerManuscriptReturn }) 
           </span>
         </div>
 
-        <div className="eic-workflow-grid">
-
-          {stageProgress?.current === "Initial Screening" && selectedStage === "Initial Screening" && status === "submitted" && (
-            <InitialScreeningStageView selected={selected} decision={decision} comments={comments}
-              setDecision={setDecision} setComments={setComments} act={act} busy={busy} needsRefresh={needsRefresh} />
-          )}
-
-          {stageProgress?.current === "Initial Editing" && selectedStage === "Initial Editing" && status === "initial_scan_passed" && (
-            <InitialEditorAssignmentView selected={selected} editor={editor} setEditor={setEditor} editors={editors} act={act} busy={busy} needsRefresh={needsRefresh} />
-          )}
-
-          {stageProgress?.current === "Initial Editing" && selectedStage === "Initial Editing" && status === "initial_editing" && approval.map(submission => (
-            <InitialEditingReviewView key={submission.submission_id} submission={submission} decision={decision} comments={comments} setDecision={setDecision} setComments={setComments} act={act} busy={busy} needsRefresh={needsRefresh} />
-          ))}
-
-          {stageProgress?.current === "Peer Review" && selectedStage === "Peer Review" && ["ready_for_peer_review", "revised"].includes(status) && (
-            <PeerReviewStageView overview={overview} />
-          )}
-
-          {stageProgress?.current === "Peer Review" && selectedStage === "EIC Decision" && canDecide && (
-            <EICDecisionStageView selected={selected} round={round} decision={decision} comments={comments}
-              setDecision={setDecision} setComments={setComments} act={act} busy={busy} needsRefresh={needsRefresh} />
-          )}
-
-          {stageProgress?.current === "Final Editing" && selectedStage === "Final Editing" && status === "final_editing" &&
-            overview.author_agreement?.status === "accepted" && !activeFinal && (
-              <FinalEditorAssignmentView selected={selected} editor={editor} setEditor={setEditor} editors={editors} act={act} busy={busy} needsRefresh={needsRefresh} />
-          )}
-
-          {stageProgress?.current === "Final Editing" && selectedStage === "Final Editing" && status === "final_editing" && latestFinal?.status === "pending_eic" && (
-            <FinalEditingReviewView latestFinal={latestFinal} decision={decision} comments={comments} setDecision={setDecision} setComments={setComments} act={act} busy={busy} needsRefresh={needsRefresh} />
-          )}
-
-        </div>
+        <EICStageContent stage={selectedStage} context={{
+          overview, formatting:currentFormatting, status, currentStage:stageProgress?.current,
+          selected, round, decision, comments, editor, editors, setDecision, setComments,
+          setEditor, act, busy, needsRefresh, approval, canDecide, activeFinal, latestFinal, download,
+        }} />
       </section>
 
-      {selectedStage === 'Submission' && <p>Submission details are available in the manuscript overview above.</p>}
-      {selectedStage === 'EIC Decision' && !canDecide && <p>{overview.review_progress?.blocked_reason || 'A decision action is not currently available.'}</p>}
-      <EICStageHistory stage={selectedStage} overview={overview} formatting={currentFormatting?.status === status ? currentFormatting : null} onDownload={download} />
-      {selectedStage && selectedStage !== stageProgress?.current && <p>Detailed stage records may be available in Activity History below.</p>}
-      <div hidden={stageProgress?.current !== 'Peer Review' || selectedStage !== 'Peer Review'}><section className="eic-reviewer-management">
-        <div className="eic-section-heading">
-          <div>
-            <span className="eic-eyebrow">PEER REVIEW</span>
-            <h3>Reviewer Management</h3>
-            <p>Manage review policies, assignments and review progress.</p>
-          </div>
-        </div>
-
-        {overview.split_review && (
-          <section className="eic-action-card eic-split-review-card">
-            <h4>Review Recommendations · Round {overview.split_review.review_round}</h4>
-            <p>Completed assignment records in this round: {overview.assignments.filter(item => item.review_round === overview.split_review.review_round && item.status === "completed").length}.</p>
-            <p>
-              {overview.split_review.eligible_completed} eligible completed reviews:
-              {" "}{overview.split_review.recommendations.join(", ") || "none yet"}.
-            </p>
-            <p>Completed assignments do not automatically qualify. Recommendation eligibility requires a completed current-round assignment, an accepted invitation, a reviewer account, a matching round file, and a submitted review with a valid recommendation. Invalidated assignments are excluded. If a reviewer has more than one qualifying review in the round, none of that reviewer's qualifying reviews are counted here.</p>
-            <p>
-              {({
-                split: "Opposing accept and reject recommendations; an additional review may be requested.",
-                aligned: "The first two recommendations are aligned.",
-                ambiguous: "Revision recommendations need editorial interpretation; no automatic split classification.",
-                insufficient: "Waiting for two eligible reviews."
-              })[overview.split_review.classification]}
-            </p>
-            {overview.split_review.additional_assignments.map(a => (
-              <p key={a.assignment_id}>
-                Additional invitation: {a.invitation_status} · review: {a.review_status}
-              </p>
-            ))}
-          </section>
-        )}
-
-        <EICReviewPolicyPanel key={`policy-${selected}`} manuscriptId={selected} token={token} invitationCount={overview.assignments.length} />
-        <BlindReviewPanel
-          key={selected}
-          manuscriptId={selected}
-          round={round}
-          status={status}
-          token={token}
-          onChanged={() => refresh(selected)}
-          splitReview={overview.split_review}
-        />
-      </section></div>
-
-      <div hidden={stageProgress?.current !== 'Formatting' || selectedStage !== 'Formatting'}><section className="eic-formatting-section">
-        <div className="eic-section-heading">
-          <div>
-            <span className="eic-eyebrow">PUBLICATION WORKFLOW</span>
-            <h3>Formatting and Publication</h3>
-            <p>Review formatted documents and manage publication.</p>
-          </div>
-        </div>
-        <FormattingPanel
-          key={`format-${selected}`}
-          role="eic"
-          token={token}
-          manuscriptId={selected}
-          canInvite={latestFinal?.status === "author_approved"}
-          onChanged={() => refresh(selected)}
-        />
-      </section></div>
+      <EICPeerReviewWorkspace currentStage={stageProgress?.current} selectedStage={selectedStage} overview={overview} selected={selected} round={round} status={status} token={token} refresh={refresh} />
+      <EICFormattingWorkspace currentStage={stageProgress?.current} selectedStage={selectedStage} selected={selected} token={token} latestFinal={latestFinal} refresh={refresh} />
 <details className="eic-history-collapsible">
         <summary>Workflow Comments</summary>
         <div className="eic-history-content">
+          {!hasWorkflowComments && <p>No workflow comments are available.</p>}
           {overview.scans.map((item, i) => item.comments && <p key={`scan-${i}`}>Screening: {item.comments}</p>)}
           {overview.submissions.map(item => <div key={`submission-${item.submission_id}`}>
             {item.comments && <p>Initial edit #{item.submission_id}: {item.comments}</p>}
@@ -433,5 +449,5 @@ export default function EICDashboard({ user, token, registerManuscriptReturn }) 
         </div>
       </details>
       <EICActivityHistory overview={overview} formatting={currentFormatting} distribution={distributionHistory?.id === selected && distributionHistory.owner === token ? distributionHistory.records : null} onDownload={download} />
-    </>}</main></div></div>;
+    </>}</div></main>}</div></div></div>;
 }

@@ -128,9 +128,11 @@ def test_pending_invitation_and_wrong_round_denied(environment):
     assert client.get('/assignments/1/download', headers=auth(2)).status_code == 409
 
 
-def test_main_review_policy_route_fails_closed_and_requires_eic(environment):
+def test_legacy_policy_route_absent_and_eic_policy_requires_role(environment):
     client, _, source = environment
     assert client.get('/assignments/1/download', headers=auth(2)).content == source.read_bytes()
     assert client.get('/assignments/review-policy/1', headers=auth(3)).status_code == 404
-    assert client.get('/assignments/review-policy/1', headers=auth(1)).status_code == 403
+    assert client.get('/assignments/review-policy/1', headers=auth(1)).status_code == 404
     assert client.put('/assignments/review-policy/1', headers=auth(3), json={'mode':'single_blind'}).status_code == 404
+    assert client.get('/eic/manuscripts/1/review-policy', headers=auth(3)).status_code == 200
+    assert client.get('/eic/manuscripts/1/review-policy', headers=auth(1)).status_code == 403

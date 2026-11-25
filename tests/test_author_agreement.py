@@ -63,7 +63,7 @@ class AuthorAgreementTest(ReviewerDownloadsTest):
             accepted=self.client.post(f'/agreements/{aid}/respond',json={'decision':'accept','agreement_version':version})
             self.assertEqual(accepted.status_code,200,accepted.text);self.assertEqual(accepted.json()['manuscript_status'],'final_editing')
             self.assertIsNotNone(accepted.json()['responded_at'])
-            self.assertEqual(self.client.post(f'/agreements/{aid}/respond',json={'decision':'accept','agreement_version':version}).status_code,409)
+            self.assertEqual(self.client.post(f'/agreements/{aid}/respond',json={'decision':'accept','agreement_version':version}).status_code,200)
             self.current=self.chief
             invitation=self.client.post('/final-workflow/invite',json={'manuscript_id':self.mid,'editor_id':self.editor.user_id})
             self.assertEqual(invitation.status_code,201,invitation.text)
@@ -73,14 +73,14 @@ class AuthorAgreementTest(ReviewerDownloadsTest):
             saved=self.db.get(models.AuthorAgreement,aid);self.db.refresh(saved)
             self.assertEqual(saved.author_id,self.author.user_id);self.assertEqual(saved.manuscript_id,self.mid);self.assertEqual(saved.agreement_version,version);self.assertEqual(saved.status,'accepted');self.assertIsNotNone(saved.responded_at)
 
-    def test_decline_holds_final_editing_and_cannot_respond_twice(self):
+    def test_decline_holds_final_editing_and_replay_is_idempotent(self):
         self.assertEqual(self.peer_decision().status_code,201)
         item=self.agreement(); payload={'decision':'decline','agreement_version':item['agreement_version']}
         result=self.client.post(f"/agreements/{item['agreement_id']}/respond",json=payload)
         self.assertEqual(result.status_code,200,result.text);self.assertEqual(result.json()['manuscript_status'],'author_agreement_declined')
         self.assertEqual(self.final_submit().status_code,409)
         self.current=self.author
-        self.assertEqual(self.client.post(f"/agreements/{item['agreement_id']}/respond",json=payload).status_code,409)
+        self.assertEqual(self.client.post(f"/agreements/{item['agreement_id']}/respond",json=payload).status_code,200)
         self.current=self.chief
         self.assertEqual(self.client.get(f'/eic/manuscripts/{self.mid}/overview').json()['author_agreement']['status'],'declined')
 

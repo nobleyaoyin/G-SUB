@@ -12,7 +12,7 @@ vi.mock('react', async importOriginal => {
       return real.useState(initial);
     },
     useRef(initial) {
-      if (initial && typeof initial === 'object' && !Array.isArray(initial) && Object.keys(initial).length === 0 && ++seed.refs === 2) initial={12:'txt-version'};
+      if (initial && typeof initial === 'object' && !Array.isArray(initial) && Object.keys(initial).length === 0 && ++seed.refs === 1) initial={12:'txt-version'};
       return real.useRef(initial);
     },
   };
@@ -34,15 +34,23 @@ it.each(['draft','draft_upload','revision_required','initial_revision_required']
   vi.stubGlobal('fetch',fetchMock);const confirm=vi.spyOn(window,'confirm').mockReturnValue(true);
   render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic"/>);
   fireEvent.click(within((await screen.findByText('Synthetic conflict')).closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
-  if(stage==='draft')fireEvent.click(screen.getByRole('button',{name:'Submit Manuscript'}));
-  if(stage==='draft_upload')fireEvent.change(document.querySelector('.manuscript-card input[type=file]'),{target:{files:[new File(['x'],'replacement.docx')]}});
+  if(stage==='draft'){
+    fireEvent.click(screen.getByRole('button',{name:'Continue Process'}));
+    fireEvent.click(screen.getByRole('button',{name:'Continue to Review'}));
+    fireEvent.click(screen.getByRole('button',{name:'Submit Manuscript'}));
+  }
+  if(stage==='draft_upload'){
+    fireEvent.click(screen.getByRole('button',{name:'Continue Process'}));
+    fireEvent.change(screen.getByLabelText(/Select a Replacement File/),{target:{files:[new File(['x'],'replacement.docx')]}});
+    fireEvent.click(screen.getByRole('button',{name:'Upload Replacement File'}));
+  }
   if(stage==='revision_required'){
-    fireEvent.click(screen.getByRole('button',{name:'Revise Manuscript'}));
+    fireEvent.click(screen.getByRole('button',{name:'Revise Editor Manuscript'}));
     fireEvent.change(screen.getByLabelText(/Revised manuscript file/),{target:{files:[new File(['x'],'replacement.docx')]}});
     fireEvent.submit(screen.getByRole('button',{name:'Resubmit Manuscript'}).closest('form'));
   }
   if(stage==='initial_revision_required')fireEvent.click(screen.getByRole('button',{name:'Submit selected DOCX revision'}));
-  expect(screen.getByText('Please select only one online draft version.')).toBeTruthy();
+  expect(await screen.findByText('Please select only one online draft version.')).toBeTruthy();
   expect(confirm).not.toHaveBeenCalled();
   expect(fetchMock.mock.calls.some(([url])=>/\/(upload|submit|resubmit|initial-resubmit)(\?|$)/.test(url))).toBe(false);
 });

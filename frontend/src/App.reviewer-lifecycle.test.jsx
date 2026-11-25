@@ -19,8 +19,10 @@ it('unmounts reviewer A on logout and mounts a fresh reviewer B after login', as
     return reply({ manuscript_id: 1, stages: [] });
   }));
   render(<App />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Manuscripts' }));
   fireEvent.click((await screen.findByRole('heading', { name: 'Manuscript #1' })).closest('.reviewer-card').querySelector('button'));
   fireEvent.change(screen.getByLabelText(/Review Comments/), { target: { value: 'Private A' } });
+  fireEvent.click(screen.getByRole('button', { name: 'User menu' }));
   fireEvent.click(screen.getByRole('button', { name: 'Logout' }));
   await screen.findByLabelText('Choose a sign-in role');
   expect(screen.queryByDisplayValue('Private A')).toBeNull();
@@ -28,6 +30,7 @@ it('unmounts reviewer A on logout and mounts a fresh reviewer B after login', as
   fireEvent.change(screen.getByLabelText('Email Address'), { target: { value: 'b@example.test' } });
   fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'synthetic' } });
   fireEvent.click(screen.getByRole('button', { name: 'Sign In' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Manuscripts' }));
   expect(await screen.findByRole('heading', { name: 'Manuscript #2' })).toBeTruthy();
   expect(screen.queryByDisplayValue('Private A')).toBeNull();
   await waitFor(() => expect(sessionStorage.getItem('access_token')).toBe('b'));

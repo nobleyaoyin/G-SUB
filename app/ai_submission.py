@@ -10,9 +10,10 @@ import os
 import stat
 from pathlib import Path
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
 
@@ -113,8 +114,9 @@ def create_submission_snapshot_job(
     review_round: int,
     submission_file: SubmissionFile,
     online_version_id: str | None = None,
-) -> tuple[str, str]:
-    """Insert one immutable snapshot and pending job without committing.
+    queue_ai: bool = True,
+) -> tuple[str, str | None]:
+    """Insert one immutable snapshot and optionally a pending AI job.
 
     Caller must already hold a SQLite BEGIN IMMEDIATE transaction.
     """
@@ -152,7 +154,7 @@ def create_submission_snapshot_job(
     ).scalar_one()
 
     snapshot_id = uuid4().hex
-    job_id = uuid4().hex
+    job_id = uuid4().hex if queue_ai else None
     timestamp = datetime.now(timezone.utc).isoformat()
 
     db.execute(
@@ -181,6 +183,9 @@ def create_submission_snapshot_job(
             "submitted_at": timestamp,
         },
     )
+
+    if not queue_ai:
+        return snapshot_id, None
 
     db.execute(
         text(
@@ -214,13 +219,20 @@ def try_create_submission_job(
     resolve_path,
     online_version_id: str | None = None,
 ) -> str:
-    """Queue advisory prescreening within an existing submission transaction.
+    """Record available submission evidence and optionally queue prescreening.
 
-Return 'disabled' when the feature is off, or 'pending' after
-creating the snapshot and job. Never commit the session.
-When enabled, database failures propagate to the caller."""
+The 017 snapshot schema is required for durable history. Older installations
+without it retain their previous submission behavior. Never commit here."""
     if not enabled:
-        return "disabled"
+        from app.submission_snapshot_history import snapshot_rows
+        tables = set(inspect(db.connection()).get_table_names())
+        if 'manuscript_submission_snapshots' in tables and 'schema_migrations' not in tables:
+            raise RuntimeError('Submission snapshot schema is incomplete')
+        # Validate the migration and immutable evidence triggers before writing.
+        # This also rejects a partially installed schema; no old data is backfilled.
+        snapshot_rows(db, SimpleNamespace(manuscript_id=manuscript_id, author_id=submitted_by))
+        if 'manuscript_submission_snapshots' not in tables:
+            return "disabled"
 
     connection = db.connection()
 
@@ -247,6 +259,7 @@ When enabled, database failures propagate to the caller."""
                 review_round=review_round,
                 submission_file=submission_file,
                 online_version_id=online_version_id,
+                queue_ai=enabled,
             )
     except IntegrityError:
         # Do not suppress unexpected database integrity violations.
@@ -254,4 +267,4 @@ When enabled, database failures propagate to the caller."""
         # surrounding submission transaction and its rollback.
         raise
 
-    return "pending"
+    return "pending" if enabled else "disabled"

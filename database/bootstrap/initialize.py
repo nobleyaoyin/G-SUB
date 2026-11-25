@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import tempfile
 
 PROJECT = Path(__file__).resolve().parents[2]
 DATA = PROJECT / '.test-data'
@@ -26,6 +27,21 @@ MIGRATIONS = (
     '013_artifact_evidence', '014_online_document_versions',
     '015_google_oidc', '016_onlyoffice_sessions', '017_ai_prescreening',
     '018_general_comments', '019_personal_notes', '021_document_distribution',
+    '022_eic_prospective_proof', '023_reviewer_candidate_intake',
+    '024_reviewer_publication_audit', '025_automatic_distribution',
+    '026_controlled_source_policy', '027_source_grant_provenance',
+    '028_automatic_distribution_intents', '029_intent_precision_failures',
+    '030_automatic_processing', '031_editor_invitation_revocation',
+    '032_editor_distribution_rounds', '033_stage_dialogue',
+    '034_agreement_snapshot_guards', '035_sample_document_storage',
+    '036_sample_initial_editing', '037_sample_final_formatting',
+    '038_candidate_preparation_provenance', '039_lifecycle_administration',
+    '040_lifecycle_succession', '046_main_submission_schema',
+)
+SUBMISSION_PRIOR_IDS = (
+    '041_author_submission_drafts', '042_author_submission_linkage',
+    '043_author_submission_attachments', '044_manuscript_upload_names',
+    '045_manuscript_upload_requests',
 )
 _NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.sqlite$')
 
@@ -39,6 +55,8 @@ def initialize(name: str) -> Path:
     root = DATA.resolve(strict=True)
     if root.parent != PROJECT or root != DATA:
         raise ValueError('Database directory escapes collaboration workspace')
+    if not root.is_relative_to(Path(tempfile.gettempdir()).resolve(strict=True)):
+        raise ValueError('Collaboration workspace must be inside the system temporary directory')
     info = root.stat()
     if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022:
         raise ValueError('Database directory must be owner-controlled')
@@ -65,7 +83,7 @@ def initialize(name: str) -> Path:
             if db.execute('SELECT version FROM collaboration_schema_version').fetchall() != [(1,)]:
                 raise RuntimeError('Unexpected collaboration schema version')
             actual = {row[0] for row in db.execute('SELECT migration_id FROM schema_migrations')}
-            if actual != set(MIGRATIONS) or db.execute('PRAGMA foreign_key_check').fetchone():
+            if actual != set(MIGRATIONS + SUBMISSION_PRIOR_IDS) or db.execute('PRAGMA foreign_key_check').fetchone():
                 raise RuntimeError('Migration ledger or foreign keys invalid')
         return path
     except Exception as exc:

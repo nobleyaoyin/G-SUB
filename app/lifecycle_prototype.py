@@ -177,7 +177,30 @@ def lifecycle_read(db, principal, target_id, *, authority, history=False):
         _admin(db,actor_id); _role(db,target_id)
         state=_state(db,target_id)
         if not history:return state
-        return tuple(db.execute('SELECT sequence,from_state,to_state,auth_generation,actor_user_id,occurred_at,reason_code FROM account_lifecycle_events WHERE user_id=? ORDER BY sequence',(target_id,)).fetchall())
+        rows=db.execute('SELECT event_id,sequence,from_state,to_state,auth_generation,actor_user_id,occurred_at,reason_code FROM account_lifecycle_events WHERE user_id=? ORDER BY sequence',(target_id,)).fetchall()
+        has_table=db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lifecycle_admin_bootstrap'").fetchone()
+        has_ledger=db.execute("SELECT 1 FROM schema_migrations WHERE migration_id='039_lifecycle_administration'").fetchone()
+        if bool(has_table)!=bool(has_ledger):raise PolicyError('Lifecycle audit unavailable')
+        bootstraps={}
+        if has_table:
+            from importlib import import_module
+            try:
+                import_module('migrations.039_lifecycle_administration').validate_schema(db)
+                bootstraps={event:(fingerprint,reference) for event,fingerprint,reference in db.execute('SELECT lifecycle_event_id,operator_key_sha256,approval_ref FROM lifecycle_admin_bootstrap')}
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lifecycle_admin_successions'").fetchone() or db.execute("SELECT 1 FROM schema_migrations WHERE migration_id='040_lifecycle_succession'").fetchone():
+                    import json
+                    from app.lifecycle_succession import current_admin
+                    current_admin(db)
+                    for event,fingerprint,bundle in db.execute('SELECT successor_lifecycle_event_id,operator_key_sha256,approval_bundle FROM lifecycle_admin_successions WHERE successor_lifecycle_event_id IS NOT NULL'):
+                        bootstraps[event]=(fingerprint,json.loads(bundle)['payload']['approval_reference'])
+            except (RuntimeError,sqlite3.Error,ValueError,KeyError,TypeError) as exc:raise PolicyError('Lifecycle audit unavailable') from exc
+        result=[]
+        for event,sequence,before,after,generation,actor,when,reason in rows:
+            if event in bootstraps:
+                fingerprint,reference=bootstraps[event]
+                actor={'kind':'offline_operator','operator_key_sha256':fingerprint,'approval_reference':reference}
+            result.append((sequence,before,after,generation,actor,when,reason))
+        return tuple(result)
     return _write(db,run)
 
 

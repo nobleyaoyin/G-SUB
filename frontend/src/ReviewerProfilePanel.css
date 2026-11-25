@@ -1,15 +1,15 @@
-.reviewer-profile-panel { margin: 20px 0; padding: 20px; background: #fff; border: 1px solid #cbd5e1; border-radius: 12px; color: #0f172a; min-width: 0; }
+.reviewer-profile-panel { margin: 20px 0; padding: 20px; background: #fff; border: 1px solid var(--border-subtle); border-radius: 12px; color: var(--text-primary); min-width: 0; }
 .reviewer-profile-panel h2 { margin: 0 0 8px; }
 .reviewer-profile-panel p, .reviewer-profile-panel small { color: #475569; }
-.reviewer-profile-panel [role="alert"] { color: #991b1b; }
-.reviewer-profile-panel [role="status"] { color: #166534; }
+.reviewer-profile-panel [role="alert"] { color: var(--danger-strong); }
+.reviewer-profile-panel [role="status"] { color: var(--success-text); }
 .reviewer-profile-panel form { display: grid; gap: 12px; }
 .reviewer-profile-panel label { display: grid; gap: 5px; font-weight: 600; min-width: 0; }
-.reviewer-profile-panel input, .reviewer-profile-panel textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 9px; border: 1px solid #94a3b8; border-radius: 6px; color: #0f172a; background: #fff; font: inherit; }
+.reviewer-profile-panel input, .reviewer-profile-panel textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 9px; border: 1px solid #94a3b8; border-radius: 6px; color: var(--text-primary); background: #fff; font: inherit; }
 .reviewer-profile-panel small { font-weight: 400; }
-.reviewer-profile-panel input:focus-visible, .reviewer-profile-panel textarea:focus-visible, .reviewer-profile-panel button:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
+.reviewer-profile-panel input:focus-visible, .reviewer-profile-panel textarea:focus-visible, .reviewer-profile-panel button:focus-visible { outline: 3px solid var(--action-accent); outline-offset: 2px; }
 .reviewer-profile-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.reviewer-profile-actions button { padding: 9px 14px; border: 1px solid #94a3b8; border-radius: 6px; background: #fff; color: #0f172a; cursor: pointer; }
-.reviewer-profile-actions button[type="submit"] { background: #1d4ed8; color: #fff; border-color: #1d4ed8; }
+.reviewer-profile-actions button { padding: 9px 14px; border: 1px solid #94a3b8; border-radius: 6px; background: #fff; color: var(--text-primary); cursor: pointer; }
+.reviewer-profile-actions button[type="submit"] { background: var(--action-primary); color: #fff; border-color: var(--action-primary); }
 .reviewer-profile-actions button:disabled { opacity: .6; cursor: not-allowed; }
 @media (max-width: 600px) { .reviewer-profile-panel { padding: 14px; } }

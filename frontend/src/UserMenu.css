@@ -1,0 +1,19 @@
+.dashboard-utilities { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex-shrink: 0; }
+.formatter-shell-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.formatter-shell-header > div:first-child { min-width: 0; }
+.formatter-shell-header h1 { overflow-wrap: anywhere; }
+.user-menu { position: relative; z-index: 30; }
+.user-menu-trigger { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; color: #172b4d; background: #fff; border: 1px solid #94a3b8; border-radius: 8px; padding: 8px; cursor: pointer; }
+.user-menu-trigger svg { width: 27px; height: 27px; }
+.user-menu-trigger:hover { background: #e2e8f0; }
+.user-menu-trigger:active { background: #cbd5e1; }
+.user-menu-trigger:focus-visible, .user-menu-logout:focus-visible { outline: 3px solid #b8860b; outline-offset: 3px; }
+.user-menu-panel { position: absolute; right: 0; top: calc(100% + 8px); width: min(280px, calc(100vw - 32px)); box-sizing: border-box; display: flex; flex-direction: column; gap: 7px; padding: 16px; background: #fff; color: #172b4d; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 8px 24px #0f172a33; overflow-wrap: anywhere; }
+.user-menu-panel h2 { font-size: 1rem; margin: 0 0 4px; }
+.user-menu-email { color: #475569; }
+.user-menu-logout { margin: 8px -16px -16px; padding: 13px 16px; border: 0; border-top: 1px solid #cbd5e1; border-radius: 0 0 10px 10px; background: #fff; color: #172b4d; text-align: left; font: inherit; cursor: pointer; }
+.user-menu-logout:hover { background: #e2e8f0; }
+.user-menu-logout:active { background: #cbd5e1; }
+.user-menu-profile { margin: 6px -4px 0; padding: 10px 8px; border: 0; border-radius: 6px; background: transparent; color: #172b4d; text-align: left; font: inherit; font-weight: 600; cursor: pointer; }
+.user-menu-profile:hover { background: #e2e8f0; }
+.user-menu-profile:focus-visible { outline: 3px solid #b8860b; outline-offset: 2px; }

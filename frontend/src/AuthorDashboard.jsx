@@ -1,3 +1,13 @@
+import {displayError} from './displayError';
+import {downloadFilename} from './documentNames';
+import StatusBadge from './StatusBadge';
+import './ManuscriptsListLayout.css';
+import {workflowStatusLabel} from './workflowStatus';
+import useStageProjection, {StageProjectionNotice} from './useStageProjection';
+import CollapsibleStatistics from './CollapsibleStatistics';
+import StageFilterControls, {StageFilterClear} from './StageFilterControls';
+import ManuscriptTimeline from "./ManuscriptTimeline";
+import AuthorGenerationHistory from "./AuthorGenerationHistory";
 import useManuscriptReturn from "./useManuscriptReturn";
 import NotesPanel from "./NotesPanel";
 import { authorPrompt } from "./participantPrompts";
@@ -9,9 +19,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import "./AuthorDashboard.css";
 import SubmissionWizard from "./submission/SubmissionWizard";
+import GuidedSubmissionWizard from "./submission/GuidedSubmissionWizard";
 import { metadataCounts } from "./submission/metadataCounts";
 
 import NotificationBell from "./NotificationBell";
+import AuthorOverview from "./AuthorOverview";
+import AuthorNotificationCenter from "./AuthorNotificationCenter";
+import { manuscriptDate, manuscriptGroup, selectManuscripts } from "./authorManuscriptView";
+import { roleLabels } from "./roleLabels";
 
 import InitialEditingPanel from "./InitialEditingPanel";
 
@@ -37,9 +52,20 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 
 
-function AuthorDashboard({ user, token, registerManuscriptReturn }) {
+function AuthorDashboard({ user, token, accountControl, registerManuscriptReturn, section = 'manuscripts', onSectionChange }) {
 
   const [manuscripts, setManuscripts] = useState([]);
+  const [manuscriptSearch, setManuscriptSearch] = useState('');
+  const [manuscriptFilter, setManuscriptFilter] = useState('all');
+  const [manuscriptSort, setManuscriptSort] = useState('recent');
+  const [notificationSnapshot, setNotificationSnapshot] = useState(null);
+  const receiveNotifications = useCallback(snapshot => setNotificationSnapshot(snapshot), []);
+  const previousSection = useRef('dashboard');
+  const observedSection = useRef(section);
+  if (observedSection.current !== section) {
+    if (section === 'notifications') previousSection.current = observedSection.current === 'manuscripts' ? 'manuscripts' : 'dashboard';
+    observedSection.current = section;
+  }
 
   const [progressId, setProgressId] = useState(null);
 
@@ -69,8 +95,6 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
   const [uploadingId, setUploadingId] = useState(null);
 
-  const [filePickerOpen, setFilePickerOpen] = useState(false);
-
   const [downloadingId, setDownloadingId] = useState(null);
 
 
@@ -86,6 +110,7 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
   const [revisionFile, setRevisionFile] = useState(null);
 
   const [selectedDocx, setSelectedDocx] = useState({});
+  const [guidedDrafts, setGuidedDrafts] = useState({});
 
   const [resubmitting, setResubmitting] = useState(false);
 
@@ -126,10 +151,6 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
   const finalEditingPanel = useRef(null);
 
   const listVersion = useRef(0);
-
-  const fileInputs = useRef({});
-
-  const fileInteraction = useRef(false);
 
   const uploadInFlight = useRef(false);
 
@@ -367,7 +388,7 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
     submitting || resubmitting || savingDraft ||
 
-    filePickerOpen || uploadingId !== null || submittingDraftId !== null
+    (showForm && wizardState.busy) || uploadingId !== null || submittingDraftId !== null
 
   );
 
@@ -526,9 +547,22 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
   };
 
   // Reuse the existing upload and refresh functions.
-  const handleWizardUploadFile = async (manuscriptId, file) => {
-    await uploadManuscriptFile(manuscriptId, file);
-    return await refreshUploadedManuscript(manuscriptId);
+  const handleWizardUploadFile = async (manuscriptId, file, requestId) => {
+    if (hasConflictingDraftSelections(manuscriptId)) {
+      throw new Error("Please select only one online draft version.");
+    }
+    if (uploadInFlight.current) throw new Error("A manuscript upload is already in progress.");
+    uploadInFlight.current = true;
+    listVersion.current++;
+    setUploadingId(manuscriptId);
+    try {
+      const uploaded = await uploadManuscriptFile(manuscriptId, file, requestId);
+      if (!await refreshUploadedManuscript(manuscriptId)) return false;
+      return { versionId: uploaded?.version_id || null, filename: uploaded?.filename || null };
+    } finally {
+      uploadInFlight.current = false;
+      setUploadingId(null);
+    }
   };
 
   const startDraftEdit = (manuscript, field) => {
@@ -745,7 +779,7 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
   // Shared manuscript upload request
 
-  const uploadManuscriptFile = async (manuscriptId, file) => {
+  const uploadManuscriptFile = async (manuscriptId, file, requestId) => {
 
     validateManuscriptFile(file);
 
@@ -754,6 +788,7 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
     const formData = new FormData();
 
     formData.append("file", file);
+    if (requestId) formData.append("request_id", requestId);
 
 
 
@@ -794,106 +829,6 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
     setSelectedDocx(previous => ({...previous, [manuscriptId]: null}));
 
     return result;
-
-  };
-
-
-
-  // Upload manuscript file for draft
-
-  const handleUpload = async (manuscriptId, file) => {
-
-    if (uploadInFlight.current) return;
-
-    if (!file) { fileInteraction.current = false; return; }
-
-    if (hasConflictingDraftSelections(manuscriptId)) {
-
-      fileInteraction.current = false;
-
-      setMessage("");
-
-      setError("Please select only one online draft version.");
-
-      if (fileInputs.current[manuscriptId]) fileInputs.current[manuscriptId].value = "";
-
-      return;
-
-    }
-
-    try {
-
-      validateManuscriptFile(file);
-
-    } catch (err) {
-
-      fileInteraction.current = false;
-
-      setMessage("");
-
-      setError(err.message || "Manuscript file upload failed.");
-
-      if (fileInputs.current[manuscriptId]) fileInputs.current[manuscriptId].value = "";
-
-      return;
-
-    }
-
-
-
-    uploadInFlight.current = true;
-
-    // Invalidate reads started before this mutation; they may return old file data.
-
-    listVersion.current++;
-
-
-
-    setError("");
-
-    setMessage("");
-
-    setUploadingId(manuscriptId);
-
-
-
-    try {
-
-      await uploadManuscriptFile(manuscriptId, file);
-
-      const refreshed = await refreshUploadedManuscript(manuscriptId);
-
-      setMessage(
-
-        refreshed
-
-          ? `Manuscript file uploaded successfully for Manuscript #${manuscriptId}.`
-
-          : `Manuscript file uploaded for Manuscript #${manuscriptId}, but the manuscript list could not be refreshed.`
-
-      );
-
-    } catch (err) {
-
-      setError(err.message || "Manuscript file upload failed.");
-
-    } finally {
-
-      uploadInFlight.current = false;
-
-      fileInteraction.current = false;
-
-      setUploadingId(null);
-
-
-
-      if (fileInputs.current[manuscriptId]) {
-
-        fileInputs.current[manuscriptId].value = "";
-
-      }
-
-    }
 
   };
 
@@ -991,7 +926,8 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
       link.href = url;
 
-      link.download = `manuscript_${manuscriptId}${extension}`;
+      const downloadName = downloadFilename(disposition);
+      link.download = downloadName && downloadName.toLowerCase().endsWith(extension) ? downloadName : `manuscript_${manuscriptId}${extension}`;
 
 
 
@@ -1103,7 +1039,7 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
       if (!revisionFile && !selectedDocx[manuscriptId]) {
 
-        setError("Please select a revised PDF or Word file before resubmitting.");
+        setError("Please select a revised PDF, DOCX, DOC, or UTF-8 TXT file before resubmitting.");
 
         return;
 
@@ -1284,10 +1220,15 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
     if (progressId !== null && progressId !== manuscriptId && (detailDirty || onlineDirty || editingId !== null || draftFields.title || draftFields.abstract) && !window.confirm('Discard unsaved manuscript edits?')) return;
 
     setEditingId(null); setDraftEditingId(null); setDraftFields({title:false,abstract:false}); setDetailDirty(false); setOnlineDirty(false); setCurrentStage(null); setProgressId(manuscriptId);
+    onSectionChange?.('manuscripts');
 
   };
 
 
+
+  const stageProjection = useStageProjection(manuscripts, token, manuscriptFilter);
+  const wizardMode = !wizardManuscript || wizardManuscript.submission_draft_id || guidedDrafts[wizardManuscript.manuscript_id] ? 'guided' : 'legacy';
+  const ActiveSubmissionWizard = wizardMode === 'legacy' ? SubmissionWizard : GuidedSubmissionWizard;
 
   return (
 
@@ -1326,8 +1267,11 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
             token={token}
 
             onNavigate={handleNotificationNavigate}
+            onViewAll={onSectionChange ? () => { if (returnToManuscripts() !== false) onSectionChange('notifications'); } : undefined}
+            onAuthorSnapshot={onSectionChange ? receiveNotifications : undefined}
 
           />
+          {accountControl}
 
 
 
@@ -1361,7 +1305,7 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
 
 
-        <div className={`author-content-layout${progressId !== null ? " has-workspace" : ""}`}>
+        <div className={`author-content-layout${progressId !== null || (onSectionChange && (section !== 'dashboard' || showForm)) ? " has-workspace" : ""}${progressId !== null && !showForm ? " has-manuscript-detail" : ""}${progressId === null && !showForm && (!onSectionChange || section === "manuscripts") ? " has-manuscript-list" : ""}`}>
 
           <div className="author-primary-content">
 
@@ -1369,7 +1313,7 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
           <div className="error-message" role="alert">
 
-            {error}
+            {displayError(error)}
 
           </div>
 
@@ -1389,7 +1333,7 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
 
 
-        <section className={`manuscript-section ${progressId !== null ? "manuscript-detail-section" : ""}`} data-sidebar-target="manuscripts" data-workspace={progressId !== null ? "selected" : undefined}>
+        {onSectionChange && section === 'dashboard' && progressId === null && !showForm ? <AuthorOverview manuscripts={manuscripts} loading={loading} error={displayError(error)} onOpen={id => handleNotificationNavigate({manuscript_id:id})} onNavigate={onSectionChange} /> : onSectionChange && section === 'notifications' ? <AuthorNotificationCenter snapshot={notificationSnapshot} token={token} onOpen={handleNotificationNavigate} onBack={() => onSectionChange(previousSection.current)} /> : onSectionChange && section === 'profile' ? <section className="author-overview-card" aria-label="My profile"><h2>My Profile</h2><p><strong>Name:</strong> {user.name || 'Unavailable'}</p><p><strong>Email:</strong> {user.email || 'Unavailable'}</p><p><strong>Role:</strong> {roleLabels[user.role] || user.role || 'Unavailable'}</p><button type="button" className="download-button" onClick={() => onSectionChange('dashboard')}>Back to dashboard</button></section> : <section className={`manuscript-section ${progressId !== null ? "manuscript-detail-section" : ""}`} data-sidebar-target="manuscripts" data-workspace={progressId !== null ? "selected" : undefined}>
 
           <div className="section-header">
 
@@ -1423,20 +1367,47 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
           </div>
 
+          {onSectionChange && progressId === null && !showForm && <div className="author-list-controls">
+            <label>Search manuscripts <input type="search" value={manuscriptSearch} onChange={event=>setManuscriptSearch(event.target.value)} placeholder="Title or manuscript ID" /></label>
+            <StageFilterControls value={manuscriptFilter} onChange={value => setManuscriptFilter(value || 'all')} items={stageProjection.items} />
+            <label>Sort <select value={manuscriptSort} onChange={event=>setManuscriptSort(event.target.value)}><option value="recent">Most recently updated</option><option value="oldest">Oldest updated</option><option value="title">Title</option></select></label>
+            <StageFilterClear onClear={() => {setManuscriptSearch('');setManuscriptFilter('all');setManuscriptSort('recent');}} />
+            <p role="status">{stageProjection.loading || stageProjection.unavailable ? 'Result count unavailable' : `${selectManuscripts(stageProjection.items,manuscriptSearch,manuscriptFilter,manuscriptSort).length} matching results`}</p><small>When an update date is unavailable, sorting uses the creation date.</small><StageProjectionNotice projection={stageProjection} />
+          </div>}
 
 
-          {showForm && (
-            <SubmissionWizard
+
+          {showForm && (wizardMode === 'guided' || wizardMode === 'legacy') && (
+            <ActiveSubmissionWizard
               key={wizardManuscript?.manuscript_id ?? "new"}
               initialManuscript={wizardManuscript}
+              initialDraftId={wizardManuscript ? (wizardManuscript.submission_draft_id || guidedDrafts[wizardManuscript.manuscript_id]) : null}
+              onDraftLinked={async (manuscriptId,draftId)=>{setGuidedDrafts(previous=>({...previous,[manuscriptId]:draftId})); await loadManuscripts();}}
               onStateChange={setWizardState}
               onCreateDraft={handleWizardCreateDraft}
               onUpdateDraft={handleWizardUpdateDraft}
               onUploadFile={handleWizardUploadFile}
+              onConfirmedUpload={id=>{const generation=(selectionGenerationRef.current[id]??0)+1;selectionGenerationRef.current[id]=generation;setSelectionGenerations(previous=>({...previous,[id]:generation}));delete onlineVersions.current[id];setSelectedDocx(previous=>({...previous,[id]:null}));setOnlineDirty(false);}}
               onSubmitDraft={handleWizardSubmitDraft}
+              token={token}
+              onDownloadCurrent={handleDownload}
+              downloadBusy={downloadingId !== null}
+              documentDirty={onlineDirty}
+              getSelectedOnlineDraft={id => selectedDocx[id] ? 'A saved DOCX draft is selected for submission.' : onlineVersions.current[id] ? 'A saved TXT draft is selected for submission.' : null}
+              getSubmissionParameters={id => selectedDocx[id] ? {selected_docx_version:selectedDocx[id]} : onlineVersions.current[id] ? {expected_online_version:onlineVersions.current[id]} : {}}
+              onSubmissionComplete={loadManuscripts}
+              onOpenManuscript={id => { setShowForm(false); setWizardManuscript(null); setOnlineDirty(false); setProgressId(id); onSectionChange?.('manuscripts'); }}
+              onDiscardDocumentEdits={() => setOnlineDirty(false)}
+              renderDocumentEditor={(manuscriptId, format) => {
+                const generation = selectionGenerationRef.current[manuscriptId] ?? 0;
+                if (format === 'txt') return <OnlineDocumentEditor key={`wizard-txt-${manuscriptId}-${generation}`} manuscriptId={manuscriptId} token={token} onDirtyChange={setOnlineDirty} onVersion={version => { if ((selectionGenerationRef.current[manuscriptId] ?? 0) !== generation) return; onlineVersions.current[manuscriptId] = version; if (version) setSelectedDocx(previous => ({...previous, [manuscriptId]: null})); }} />;
+                if (format === 'docx') return <OnlineDocxEditor key={`wizard-docx-${manuscriptId}-${generation}`} manuscriptId={manuscriptId} token={token} stage="author" showUnavailable onSelect={id => { if ((selectionGenerationRef.current[manuscriptId] ?? 0) !== generation) return; delete onlineVersions.current[manuscriptId]; setSelectedDocx(previous => ({...previous, [manuscriptId]: id})); }} onDirtyChange={setOnlineDirty} />;
+                return null;
+              }}
               onClose={() => {
                 setShowForm(false);
                 setWizardManuscript(null);
+                setOnlineDirty(false);
               }}
             />
           )}
@@ -1457,7 +1428,9 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
             <div className="manuscript-list">
 
-              {manuscripts.filter(manuscript => progressId === null || manuscript.manuscript_id === progressId).map((manuscript) => {
+              {progressId === null && onSectionChange && !stageProjection.loading && !stageProjection.unavailable && selectManuscripts(stageProjection.items,manuscriptSearch,manuscriptFilter,manuscriptSort).length === 0 && <p>No manuscripts match these filters.</p>}
+
+              {(progressId === null && onSectionChange ? selectManuscripts(stageProjection.items,manuscriptSearch,manuscriptFilter,manuscriptSort) : manuscripts.filter(manuscript => progressId === null || manuscript.manuscript_id === progressId)).map((manuscript) => {
 
                 const manuscriptId = manuscript.manuscript_id;
 
@@ -1485,11 +1458,12 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
                     <div className="manuscript-card-top"><h3>{manuscript.title}</h3>
 
-                      <span className={`status-badge ${manuscript.status}`}>{manuscript.status?.replaceAll('_', ' ')}</span></div>
+                      <StatusBadge status={manuscript.status} /></div>
 
                     <p>Manuscript #{manuscriptId}</p>
+                    {onSectionChange && <p>Created: {manuscriptDate(manuscript.created_at)}{manuscript.updated_at ? ` · Updated: ${manuscriptDate(manuscript.updated_at)}` : ''}</p>}
 
-                    <button type="button" className="download-button" onClick={() => {
+                    <button type="button" className="manuscript-open-button" onClick={() => {
 
                 if (showForm && (wizardState.busy || (wizardState.dirty && !window.confirm('Leave the submission wizard and discard unsaved changes?')))) return;
                 setShowForm(false); setWizardManuscript(null);
@@ -1529,21 +1503,13 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
                       setEditingId(null); setDraftEditingId(null); setDraftFields({title:false,abstract:false}); setDetailDirty(false); setOnlineDirty(false); setProgressId(null);
 
-                    }}>Back to Manuscripts</button>
+                    }}>Back to manuscripts</button>
 
 
 
                     <div className="manuscript-card-top">
                       <h3 className="manuscript-detail-title">{manuscript.title?.trim() || `Manuscript #${manuscriptId}`}</h3>
-                      <span
-
-                        className={`status-badge ${manuscript.status}`}
-
-                      >
-
-                        {typeof manuscript.status === "string" ? manuscript.status.replaceAll("_", " ") : "Unknown"}
-
-                      </span>
+                      <StatusBadge status={manuscript.status} />
 
                     </div>
 
@@ -1554,48 +1520,13 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
                       Manuscript #{manuscriptId}
 
                     </p>}
-                    <details className="workspace-context"><summary>Private Notes</summary><NotesPanel manuscriptId={manuscriptId} token={token} /></details>
-          {progressId !== null && !showForm && (
-            <section
-              className="author-workflows author-workflows-progress"
-              key={`progress-${progressId}`}
-              aria-label="Manuscript progress"
-            >
-              <div className="author-wizard-progress">
-                <p className="progress-next"><strong>Next action:</strong> {authorPrompt(manuscript, Boolean(error))}</p>
-                <ManuscriptProgress showTitle={false} showNextAction={false}
-                  key={`progress-${progressId}`}
-                  manuscriptId={progressId}
-                  token={token}
-                  revision={progressRevision}
-                  suspendRefreshRef={fileInteraction}
-                  onStageChange={setCurrentStage}
-                />
-              </div>
-            </section>
-          )}
-
-
-
-
-
-                    <div
-                      className="manuscript-section-heading"
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: "16px",
-                        flexWrap: "wrap",
-                        marginTop: "20px",
-                        marginBottom: "12px"
-                      }}
-                    >
-                      <h4 style={{ margin: 0 }}>Manuscript Information</h4>
+                    <section aria-label="Manuscript Abstract" className="author-abstract-section">
+                    <div className="manuscript-section-heading">
+                      <h4>Manuscript Abstract</h4>
 
                       {isDraft && <div className="manuscript-actions">
-                        {!draftFields.title && <button type="button" className="upload-button" disabled={savingFields.title} onClick={() => startDraftEdit(manuscript, 'title')}>Edit Title</button>}
-                        {!draftFields.abstract && <button type="button" className="upload-button" disabled={savingFields.abstract} onClick={() => startDraftEdit(manuscript, 'abstract')}>Edit Abstract</button>}
+                        {!draftFields.title && <button type="button" className="upload-button" disabled={savingFields.title} onClick={() => startDraftEdit(manuscript, 'title')}>Edit title</button>}
+                        {!draftFields.abstract && <button type="button" className="upload-button" disabled={savingFields.abstract} onClick={() => startDraftEdit(manuscript, 'abstract')}>Edit abstract</button>}
                       </div>}
                     </div>
 
@@ -1604,14 +1535,14 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
                       <input id={`draft-title-${manuscriptId}`} value={draftTitle} onChange={event => setDraftTitle(event.target.value)} disabled={savingFields.title} required />
                       <p>{metadataCounts(draftTitle).characters}/255 characters</p>
                       {metadataErrors.title && <p role="alert">{metadataErrors.title}</p>}
-                      <div className="manuscript-actions"><button type="submit" className="upload-button" disabled={savingFields.title}>{savingFields.title ? 'Saving Title...' : 'Save Title'}</button><button type="button" className="download-button" disabled={savingFields.title} onClick={() => cancelDraftEdit('title')}>Cancel Title</button></div>
+                      <div className="manuscript-actions"><button type="submit" className="upload-button" disabled={savingFields.title}>{savingFields.title ? 'Saving title...' : 'Save title'}</button><button type="button" className="download-button" disabled={savingFields.title} onClick={() => cancelDraftEdit('title')}>Cancel title</button></div>
                     </form>}
                     {isDraft && isDraftEditing && draftFields.abstract ? <form data-metadata-editor className="submission-form" onSubmit={event => handleSaveDraft(event, manuscriptId, 'abstract')}>
                       <label htmlFor={`draft-abstract-${manuscriptId}`}>Abstract</label>
                       <textarea id={`draft-abstract-${manuscriptId}`} value={draftAbstract} onChange={event => setDraftAbstract(event.target.value)} rows={5} disabled={savingFields.abstract} required />
                       <p>{metadataCounts(draftAbstract).words} words · {metadataCounts(draftAbstract).characters} characters (display count)</p>
                       {metadataErrors.abstract && <p role="alert">{metadataErrors.abstract}</p>}
-                      <div className="manuscript-actions"><button type="submit" className="upload-button" disabled={savingFields.abstract}>{savingFields.abstract ? 'Saving Abstract...' : 'Save Abstract'}</button><button type="button" className="download-button" disabled={savingFields.abstract} onClick={() => cancelDraftEdit('abstract')}>Cancel Abstract</button></div>
+                      <div className="manuscript-actions"><button type="submit" className="upload-button" disabled={savingFields.abstract}>{savingFields.abstract ? 'Saving abstract...' : 'Save abstract'}</button><button type="button" className="download-button" disabled={savingFields.abstract} onClick={() => cancelDraftEdit('abstract')}>Cancel abstract</button></div>
                     </form> : <p className="manuscript-abstract">{manuscript.abstract}</p>}
 
 
@@ -1638,121 +1569,43 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
 
 
-                    <h4>Current Stage Actions</h4>
+                    </section>
+                    <details className="workspace-context"><summary>Private Notes</summary><NotesPanel manuscriptId={manuscriptId} token={token} /></details>
+                    <AuthorGenerationHistory key={`generation-${manuscriptId}`} manuscriptId={manuscriptId} token={token} revision={progressRevision} />
+          {progressId !== null && !showForm && (
+            <section
+              className="author-workflows author-workflows-progress"
+              key={`progress-${progressId}`}
+              aria-label="Manuscript progress"
+            >
+              <div className="author-wizard-progress">
+                <ManuscriptProgress showTitle={false}
+                  key={`progress-${progressId}`}
+                  manuscriptId={progressId}
+                  token={token}
+                  fallbackAction={authorPrompt(manuscript, Boolean(error))}
+                  taskDisabled={Boolean(error)}
+                  revision={progressRevision}
+                  onStageChange={setCurrentStage}
+                />
+              </div>
+              <ManuscriptTimeline manuscriptId={progressId} token={token} revision={progressRevision} />
+            </section>
+          )}
 
-                    {manuscript.file_type === "txt" && ['draft', 'revision_required', 'initial_revision_required'].includes(manuscript.status) && <OnlineDocumentEditor key={`online-${manuscriptId}`} manuscriptId={manuscriptId} token={token} onDirtyChange={setOnlineDirty} onVersion={version => { if ((selectionGenerationRef.current[manuscriptId] ?? 0) !== editorGeneration) return; onlineVersions.current[manuscriptId] = version; if (version) setSelectedDocx(previous => ({...previous, [manuscriptId]: null})); }} />}
 
-                    {manuscript.file_type === "docx" && ['draft', 'revision_required', 'initial_revision_required'].includes(manuscript.status) && <OnlineDocxEditor key={`docx-${manuscriptId}`} manuscriptId={manuscriptId} token={token} stage="author" onSelect={id => { if ((selectionGenerationRef.current[manuscriptId] ?? 0) !== editorGeneration) return; delete onlineVersions.current[manuscriptId]; setSelectedDocx(previous => ({...previous, [manuscriptId]: id})); setRevisionFile(null); if (revisionFileInput.current) revisionFileInput.current.value = ''; }} onDirtyChange={setOnlineDirty} />}
+
+
+
+                    <h4>Next Step</h4>
+
+                    {manuscript.file_type === "txt" && ['revision_required', 'initial_revision_required'].includes(manuscript.status) && <OnlineDocumentEditor key={`online-${manuscriptId}`} manuscriptId={manuscriptId} token={token} onDirtyChange={setOnlineDirty} onVersion={version => { if ((selectionGenerationRef.current[manuscriptId] ?? 0) !== editorGeneration) return; onlineVersions.current[manuscriptId] = version; if (version) setSelectedDocx(previous => ({...previous, [manuscriptId]: null})); }} />}
+
+                    {manuscript.file_type === "docx" && ['revision_required', 'initial_revision_required'].includes(manuscript.status) && <OnlineDocxEditor key={`docx-${manuscriptId}`} manuscriptId={manuscriptId} token={token} stage="author" onSelect={id => { if ((selectionGenerationRef.current[manuscriptId] ?? 0) !== editorGeneration) return; delete onlineVersions.current[manuscriptId]; setSelectedDocx(previous => ({...previous, [manuscriptId]: id})); setRevisionFile(null); if (revisionFileInput.current) revisionFileInput.current.value = ''; }} onDirtyChange={setOnlineDirty} />}
 
                     {manuscript.status === 'initial_revision_required' && selectedDocx[manuscriptId] && <button type="button" disabled={resubmitting} onClick={async () => { if (hasConflictingDraftSelections(manuscriptId)) { setError('Please select only one online draft version.'); return; } setResubmitting(true); setError(''); try { const response = await fetch(`${API_URL}/manuscripts/${manuscriptId}/initial-resubmit?selected_docx_version=${encodeURIComponent(selectedDocx[manuscriptId])}`, {method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:'{}'}); await readResponse(response,'Initial resubmission failed'); setSelectedDocx(previous => ({...previous,[manuscriptId]:null})); setMessage('Revision submitted for initial screening.'); await loadManuscripts(); } catch (e) { setError(e.message || 'Initial resubmission failed'); } finally { setResubmitting(false); } }}>Submit selected DOCX revision</button>}
 
-                    <div className="manuscript-actions">
-
-                      {isDraft && (
-
-                        <>
-
-                          <input
-
-                            type="file"
-
-                            accept=".pdf,.docx,.doc,.txt"
-
-                            className="hidden-file-input"
-
-                            ref={(element) => {
-
-                              fileInputs.current[manuscriptId] = element;
-
-                            }}
-
-                            onChange={(event) => {
-
-                              setFilePickerOpen(false);
-
-                              handleUpload(
-
-                                manuscriptId,
-
-                                event.target.files?.[0]
-
-                              );
-
-                            }}
-
-                            onCancel={() => {
-
-                              fileInteraction.current = false;
-
-                              setFilePickerOpen(false);
-
-                            }}
-
-                          />
-
-
-
-                          <button
-
-                            type="button"
-
-                            className="upload-button file-upload-control"
-
-                            disabled={uploadingId !== null}
-
-                            onClick={() => {
-
-                              fileInteraction.current = true;
-
-                              setFilePickerOpen(true);
-
-                              fileInputs.current[manuscriptId]?.click();
-
-                            }}
-
-                          >
-
-                            {uploadingId === manuscriptId
-
-                              ? "Uploading..."
-
-                              : "Upload File"}
-
-                          </button>
-
-                        </>
-
-                      )}
-
-
-
-                      {(manuscript.has_pdf || isDraft) && (
-
-                        <button
-
-                          type="button"
-
-                          className="download-button"
-
-                          disabled={!manuscript.has_pdf || downloadingId !== null}
-
-                          title={!manuscript.has_pdf ? "Upload a manuscript file before downloading" : "Download manuscript file"}
-
-                          onClick={() => handleDownload(manuscriptId)}
-
-                        >
-
-                          {downloadingId === manuscriptId
-
-                            ? "Downloading..."
-
-                            : "Download File"}
-
-                        </button>
-
-                      )}
-
-
+                    <div className="manuscript-actions" id={`author-manuscript-actions-${manuscriptId}`}>
 
                       {isDraft && (
 
@@ -1767,33 +1620,15 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
                               uploadingId !== null
                             }
                             onClick={() => {
+                              if ((detailDirty || onlineDirty || editingId !== null || draftFields.title || draftFields.abstract) && !window.confirm('Discard unsaved manuscript edits?')) return;
+                              setEditingId(null); setDraftEditingId(null); setDraftFields({title:false, abstract:false}); setDetailDirty(false); setOnlineDirty(false);
                               setWizardManuscript(manuscript);
                               setShowForm(true);
                               setError("");
                               setMessage("");
                             }}
                           >
-                            Continue Submission
-                          </button>
-
-                          
-
-                          <button
-
-                            type="button"
-
-                            className="upload-button"
-
-                            disabled={!manuscript.has_pdf || submittingDraftId !== null || uploadingId !== null || savingDraft}
-
-                            onClick={() => handleSubmitDraft(manuscript)}
-
-                            title={!manuscript.has_pdf ? "Upload a PDF, DOCX, DOC, or TXT file before submitting" : "Submit for review"}
-
-                          >
-
-                            {submittingDraftId === manuscriptId ? "Submitting..." : "Submit Manuscript"}
-
+                            Continue Process
                           </button>
 
                         </>
@@ -1816,7 +1651,7 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
                         >
 
-                          Revise Manuscript
+                          Revise Editor Manuscript
 
                         </button>
 
@@ -1840,7 +1675,7 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
                         <h3>
 
-                          Revise Manuscript #{manuscriptId}
+                          Revise Editor Manuscript #{manuscriptId}
 
                         </h3>
 
@@ -1915,6 +1750,8 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
                         />
 
 
+
+                        {manuscript.has_pdf && <button type="button" className="download-button" disabled={downloadingId !== null} onClick={() => handleDownload(manuscriptId)}>{downloadingId === manuscriptId ? "Downloading..." : "Download Current File"}</button>}
 
                         <label
 
@@ -1992,6 +1829,8 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
                     )}
 
+
+
                   </div>
 
                 );
@@ -2002,7 +1841,7 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
           )}
 
-        </section>
+        </section>}
 
         {progressId !== null && !showForm && (
 
@@ -2023,23 +1862,28 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
             <div className="author-stage-content">
 
               {currentStage === "Initial Editing" && (
+                <div id={`initial-editing-action-${progressId}`}>
                 <InitialEditingPanel
                   role="author"
                   token={token}
                   manuscriptId={progressId}
                   onChanged={loadManuscripts}
                 />
+                </div>
               )}
 
               {currentStage === "Author Agreement" && (
+                <div id={`author-agreement-action-${progressId}`}>
                 <AuthorAgreementPanel
                   token={token}
                   manuscriptId={progressId}
                   onChanged={refreshAfterAgreement}
                 />
+                </div>
               )}
 
               {currentStage === "Final Editing" && (
+                <div id={`final-editing-action-${progressId}`}>
                 <FinalEditingPanel
                   ref={finalEditingPanel}
                   role="author"
@@ -2047,15 +1891,18 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
                   manuscriptId={progressId}
                   onChanged={loadManuscripts}
                 />
+                </div>
               )}
 
-              {currentStage === "Formatting" && (
+              {['Formatting', 'Proofing'].includes(currentStage) && (
+                <div id={`author-formatting-action-${progressId}`}>
                 <FormattingPanel
                   role="author"
                   token={token}
                   manuscriptId={progressId}
                   onChanged={loadManuscripts}
                 />
+                </div>
               )}
 
 
@@ -2067,16 +1914,15 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
           </div>
 
-        {progressId === null && <aside className="author-statistics-sidebar" aria-label="Manuscript statistics">
+        {(!onSectionChange || (['dashboard', 'manuscripts'].includes(section) && !showForm)) && <aside className="author-statistics-sidebar" aria-label="Manuscript statistics">
 
-          <details className="dashboard-collapsible">
-            <summary>Statistics</summary>
+          <CollapsibleStatistics className="dashboard-collapsible">
 
-          <div className="stats-grid">
+          {error ? <p>Statistics are unavailable.</p> : loading ? <p role="status">Loading statistics…</p> : <div className="stats-grid">
 
           <div className="stat-card">
 
-            <span>My Manuscripts</span>
+            <span>{onSectionChange ? 'Total manuscripts' : 'My Manuscripts'}</span>
 
             <strong>{manuscripts.length}</strong>
 
@@ -2106,9 +1952,9 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
           <div className="stat-card">
 
-            <span>Submitted</span>
+            <span>{onSectionChange ? 'Submitted / in progress' : 'Submitted'}</span>
 
-            <strong>{submittedCount}</strong>
+            <strong>{onSectionChange ? manuscripts.filter(m => manuscriptGroup(m.status) === 'progress').length : submittedCount}</strong>
 
           </div>
 
@@ -2116,15 +1962,17 @@ function AuthorDashboard({ user, token, registerManuscriptReturn }) {
 
           <div className="stat-card">
 
-            <span>Revision Required</span>
+            <span>Revision required</span>
 
-            <strong>{revisionCount}</strong>
+            <strong>{onSectionChange ? manuscripts.filter(m => manuscriptGroup(m.status) === 'revision').length : revisionCount}</strong>
 
           </div>
 
-        </div>
+          {onSectionChange && <div className="stat-card"><span>Rejected</span><strong>{manuscripts.filter(m => manuscriptGroup(m.status) === 'rejected').length}</strong></div>}
 
-          </details>
+        </div>}
+
+          </CollapsibleStatistics>
 
         </aside>}
 

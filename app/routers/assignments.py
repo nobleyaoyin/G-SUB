@@ -2,7 +2,7 @@ from app.config import DATA_ROOT
 from fastapi.responses import JSONResponse
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import or_, select, update
+from sqlalchemy import inspect, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 import logging
 import sqlite3
@@ -23,24 +23,27 @@ from app.models import (
     ReviewRoundFile,
     ReviewAssignmentFile,
     ReviewerInvitation,
+    ReviewerInvitationInvalidation,
 )
 from app.schemas import ReviewAssignmentCreate, ReviewAssignmentResponse
 from app.routers.users import require_role
 from app.routers.manuscripts import manuscript_has_pdf, can_access_manuscript
 from app.review_files import get_or_create_round_one, resolve_assignment_file, validate_round_file
 from app.reviewer_invitations import invitation_status, not_declined
+from app.participant_tasks import reviewer_assignment_task
 from app.review_progress import review_progress
 from app.email.enqueue_mode import EnqueueMode, OutboxSchemaUnavailable, check_outbox_schema, reviewer_email_enqueue_mode
 from app.email.outbox import enqueue_reviewer_invitation
-from app.reviewer_profiles import load_profiles
+from app.reviewer_profiles import load_profiles, profiles, schema_available
 from app.reviewer_metadata_gate import MetadataMode, MetadataAccessDenied, MetadataSchemaUnavailable, ReviewerSafeAssignmentDTO, ReviewerAssignmentDoubleDTO, reviewer_metadata_mode, reviewer_assignment_dtos
 from app.reviewer_metadata_gate import _security_context
 from app.blind_policy_store import read_policy, select_mode, change_mode, lock_mode, PolicyError
-from app.main_reviewer_context import ReviewerArtifactContext, AuthenticatedEditorialAuthority, reviewer_artifact_context
+from app.reviewer_demo_download import DemoArtifactContext, AuthenticatedEditorialAuthority, reviewer_demo_artifact_context
 from app import reviewer_artifact_binding, reviewer_artifact_service
 from app.reviewer_artifact_storage import StorageError
 from app.split_review import split_review_status
 from app.reviewer_document_release import release_reviewer_document, reviewer_document_available
+from app.editor_invitation_revocation import is_revoked
 
 
 router = APIRouter(
@@ -51,50 +54,60 @@ BASE_DIR = DATA_ROOT
 logger = logging.getLogger(__name__)
 
 
-class ReviewPolicySelection(BaseModel):
+def _has_current_initial_editor_invitation(db, manuscript_id, editor_id):
+    """Allow an editor only while at least one accepted invitation is not revoked."""
+    invitations = db.scalars(select(InitialEditorInvitation.invitation_id).where(
+        InitialEditorInvitation.manuscript_id == manuscript_id,
+        InitialEditorInvitation.editor_id == editor_id,
+        InitialEditorInvitation.status == "accepted",
+    ).order_by(InitialEditorInvitation.invitation_id.desc())).all()
+    return any(not is_revoked(db, 'initial', invitation_id) for invitation_id in invitations)
+
+
+class DemoPolicySelection(BaseModel):
     mode: Literal['single_blind', 'double_blind']
     expected_revision: int | None = None
 
 
-def _review_connection(db, mode, *, write=False):
+def _demo_connection(db, mode, *, write=False):
     if mode is not MetadataMode.EXPERIMENTAL:
-        raise HTTPException(404, 'Review workflow unavailable')
+        raise HTTPException(404, 'Demo workflow unavailable')
     connection = db.connection()
     if connection.dialect.name != 'sqlite':
-        raise HTTPException(503, 'Review workflow unavailable')
+        raise HTTPException(503, 'Demo workflow unavailable')
     raw = connection.connection.driver_connection
     if raw.in_transaction:
-        raise HTTPException(503, 'Review transaction unavailable')
+        raise HTTPException(503, 'Demo transaction unavailable')
     connection.exec_driver_sql('BEGIN IMMEDIATE' if write else 'BEGIN')
     return raw
 
 
-def _review_eic(raw, user_id, manuscript_id):
+def _demo_eic(raw, user_id, manuscript_id):
     if not raw.execute("SELECT 1 FROM users WHERE user_id=? AND role='eic'", (user_id,)).fetchone():
         raise HTTPException(403, 'EIC access required')
     if not raw.execute("SELECT 1 FROM manuscripts WHERE manuscript_id=? AND status!='draft'", (manuscript_id,)).fetchone():
         raise HTTPException(404, 'Manuscript unavailable')
 
 
-@router.get('/review-policy/{manuscript_id}')
-def review_policy_get(manuscript_id: int, current_user: User = Depends(require_role('eic')),
+@router.get('/demo-policy/{manuscript_id}')
+def demo_policy_get(manuscript_id: int, current_user: User = Depends(require_role('eic')),
                     db: Session = Depends(get_db), mode: MetadataMode = Depends(reviewer_metadata_mode)):
     try:
-        raw = _review_connection(db, mode)
-        _review_eic(raw, current_user.user_id, manuscript_id)
+        raw = _demo_connection(db, mode)
+        _demo_eic(raw, current_user.user_id, manuscript_id)
         value = read_policy(raw, manuscript_id)
         return {'mode': value['mode'] if value else None, 'revision': value['revision'] if value else None,
                 'locked': bool(value and value['locked_at'])}
     except (PolicyError, sqlite3.DatabaseError, SQLAlchemyError):
-        raise HTTPException(503, 'Review policy unavailable') from None
+        raise HTTPException(503, 'Demo policy unavailable') from None
 
 
-@router.put('/review-policy/{manuscript_id}')
-def review_policy_put(manuscript_id: int, data: ReviewPolicySelection, current_user: User = Depends(require_role('eic')),
+@router.put('/demo-policy/{manuscript_id}')
+def demo_policy_put(manuscript_id: int, data: DemoPolicySelection, current_user: User = Depends(require_role('eic')),
                     db: Session = Depends(get_db), mode: MetadataMode = Depends(reviewer_metadata_mode)):
     try:
-        raw = _review_connection(db, mode, write=True)
-        _review_eic(raw, current_user.user_id, manuscript_id)
+        raw = _demo_connection(db, mode, write=True)
+        _demo_eic(raw, current_user.user_id, manuscript_id)
         old = read_policy(raw, manuscript_id)
         if old is None and data.expected_revision is None:
             result = select_mode(raw, manuscript_id, data.mode, current_user.user_id)
@@ -112,17 +125,17 @@ def review_policy_put(manuscript_id: int, data: ReviewPolicySelection, current_u
         raise HTTPException(503, 'Policy update outcome unavailable; refresh before retrying') from None
 
 
-@router.post('/review-invitations', status_code=201)
-def review_invitation(data: ReviewAssignmentCreate, current_user: User = Depends(require_role('eic')),
+@router.post('/demo-invitations', status_code=201)
+def demo_invitation(data: ReviewAssignmentCreate, current_user: User = Depends(require_role('eic')),
                     db: Session = Depends(get_db), mode: MetadataMode = Depends(reviewer_metadata_mode),
-                    artifact_context: ReviewerArtifactContext | None = Depends(reviewer_artifact_context)):
-    return _review_invitation(data, current_user, db, mode, artifact_context)
+                    artifact_context: DemoArtifactContext | None = Depends(reviewer_demo_artifact_context)):
+    return _demo_invitation(data, current_user, db, mode, artifact_context)
 
 
-def _review_invitation(data, current_user, db, mode, artifact_context, *, require_split=False):
+def _demo_invitation(data, current_user, db, mode, artifact_context, *, require_split=False):
     try:
-        raw = _review_connection(db, mode, write=True)
-        _review_eic(raw, current_user.user_id, data.manuscript_id)
+        raw = _demo_connection(db, mode, write=True)
+        _demo_eic(raw, current_user.user_id, data.manuscript_id)
         policy = read_policy(raw, data.manuscript_id)
         if not policy:
             raise HTTPException(409, 'Select a review mode before inviting reviewers')
@@ -143,7 +156,7 @@ def _review_invitation(data, current_user, db, mode, artifact_context, *, requir
             if not source: raise HTTPException(409, 'Review source unavailable')
             validate_round_file(source, manuscript, db)
         if policy['mode'] == 'double_blind':
-            if type(artifact_context) is not ReviewerArtifactContext:
+            if type(artifact_context) is not DemoArtifactContext:
                 raise HTTPException(409, 'Double-Blind artifact readiness is unavailable')
             reviewer_artifact_binding.verify_preinvitation(raw, artifact_context.proof, artifact_context.provenance,
                 artifact_context.storage, data.manuscript_id, data.review_round, source.round_file_id)
@@ -172,26 +185,26 @@ def _review_invitation(data, current_user, db, mode, artifact_context, *, requir
 @router.post('/additional-reviewer', status_code=201)
 def invite_additional_reviewer(data: ReviewAssignmentCreate, current_user: User = Depends(require_role('eic')),
         db: Session = Depends(get_db), mode: MetadataMode = Depends(reviewer_metadata_mode),
-        context: ReviewerArtifactContext | None = Depends(reviewer_artifact_context)):
+        context: DemoArtifactContext | None = Depends(reviewer_demo_artifact_context)):
     if mode is MetadataMode.EXPERIMENTAL:
-        return _review_invitation(data, current_user, db, mode, context, require_split=True)
+        return _demo_invitation(data, current_user, db, mode, context, require_split=True)
     if mode is not MetadataMode.DISABLED:
         raise HTTPException(503, 'Additional reviewer unavailable')
     return _invitation_operation(data, current_user, db, EnqueueMode.DISABLED, require_split=True)
 
 
-@router.post('/review-invitations/{assignment_id}/bind-artifact')
-def review_bind_artifact(assignment_id: int, current_user: User = Depends(require_role('eic')),
+@router.post('/demo-invitations/{assignment_id}/bind-artifact')
+def demo_bind_artifact(assignment_id: int, current_user: User = Depends(require_role('eic')),
                        db: Session = Depends(get_db), mode: MetadataMode = Depends(reviewer_metadata_mode),
-                       context: ReviewerArtifactContext | None = Depends(reviewer_artifact_context)):
+                       context: DemoArtifactContext | None = Depends(reviewer_demo_artifact_context)):
     try:
-        raw = _review_connection(db, mode, write=True)
+        raw = _demo_connection(db, mode, write=True)
         row = raw.execute('''SELECT a.manuscript_id,a.review_round,f.round_file_id FROM review_assignments a
             JOIN review_assignment_files f ON f.assignment_id=a.assignment_id WHERE a.assignment_id=?''', (assignment_id,)).fetchone()
-        if not row or type(context) is not ReviewerArtifactContext:
+        if not row or type(context) is not DemoArtifactContext:
             raise HTTPException(409, 'Reviewer artifact unavailable')
         mid, rnd, source_id = row
-        _review_eic(raw, current_user.user_id, mid)
+        _demo_eic(raw, current_user.user_id, mid)
         policy = read_policy(raw, mid)
         if not policy or not policy['locked_at']:
             raise HTTPException(409, 'Reviewer artifact unavailable')
@@ -305,29 +318,35 @@ def search_reviewer_directory(
     current_user: Annotated[User, Depends(require_role("editor", "eic"))],
     response: Response,
     db: Session = Depends(get_db),
-    q: str = Query(..., min_length=2, max_length=100),
+    q: str | None = Query(None, max_length=100),
+    offset: int = Query(0, ge=0, le=100000),
 ):
-    """Search minimal reviewer contact data for an authorized current assignment."""
+    """Browse or search bounded reviewer contact data for an authorized assignment."""
     manuscript = db.get(Manuscript, manuscript_id)
     if manuscript is None:
         raise HTTPException(status_code=404, detail="Manuscript not found")
-    if current_user.role == "editor" and not db.scalar(select(InitialEditorInvitation.invitation_id).where(
-        InitialEditorInvitation.manuscript_id == manuscript_id,
-        InitialEditorInvitation.editor_id == current_user.user_id,
-        InitialEditorInvitation.status == "accepted",
-    ).limit(1)):
+    if current_user.role == "editor" and not _has_current_initial_editor_invitation(
+        db, manuscript_id, current_user.user_id
+    ):
         raise HTTPException(status_code=403, detail="You are not the assigned editor for this manuscript")
     if manuscript.status not in ("ready_for_peer_review", "revised"):
         raise HTTPException(status_code=409, detail="Manuscript is not ready for reviewer assignment")
-    term = q.strip()
-    if len(term) < 2:
-        raise HTTPException(status_code=422, detail="Enter at least two search characters")
-    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    pattern = f"%{escaped}%"
-    reviewers = db.scalars(select(User).where(
-        User.role == "reviewer",
-        or_(User.name.ilike(pattern, escape="\\"), User.email.ilike(pattern, escape="\\")),
-    ).order_by(User.name, User.user_id).limit(20)).all()
+    if q is None and current_user.role != "eic":
+        raise HTTPException(status_code=403, detail="Reviewer browsing is restricted to the EIC")
+    search_terms = []
+    if q is not None:
+        term = q.strip()
+        if len(term) < 2:
+            raise HTTPException(status_code=422, detail="Enter at least two search characters")
+        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        search_terms = [User.name.ilike(pattern, escape="\\"), User.email.ilike(pattern, escape="\\")]
+        if schema_available(db):
+            search_terms.append(User.user_id.in_(select(profiles.c.user_id).where(profiles.c.institution.ilike(pattern, escape="\\"))))
+    query = select(User).where(User.role == "reviewer")
+    if search_terms:
+        query = query.where(or_(*search_terms))
+    reviewers = db.scalars(query.order_by(User.name, User.user_id).offset(offset).limit(20)).all()
     ids = [user.user_id for user in reviewers]
     assignments = db.scalars(select(ReviewAssignment).where(
         ReviewAssignment.manuscript_id == manuscript_id,
@@ -392,7 +411,7 @@ def _invitation_operation(data, current_user, db, enqueue_mode, *, require_split
 
     try:
         if require_split:
-            _review_eic(raw, current_user.user_id, data.manuscript_id)
+            _demo_eic(raw, current_user.user_id, data.manuscript_id)
             manuscript = db.get(Manuscript, data.manuscript_id)
             if manuscript.review_round != data.review_round or not split_review_status(db, manuscript)['can_invite_additional']:
                 raise HTTPException(409, 'No eligible split or an additional reviewer is already active')
@@ -475,21 +494,18 @@ def _assign_reviewer(assignment_data, current_user, db, enqueue_mode, raw):
 
     # Step 2.2: Verify that the current editor is assigned
     # to this manuscript.
-    accepted_invitation = db.scalar(
-        select(InitialEditorInvitation).where(
-            InitialEditorInvitation.manuscript_id
-            == manuscript.manuscript_id,
-            InitialEditorInvitation.editor_id
-            == current_user.user_id,
-            InitialEditorInvitation.status == "accepted",
-        )
-    )
-
-    if current_user.role == "editor" and accepted_invitation is None:
+    if current_user.role == "editor" and not _has_current_initial_editor_invitation(
+        db, manuscript.manuscript_id, current_user.user_id
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You are not the assigned editor for this manuscript",
         )
+
+    # Both the policy event chain and invitation binding require foreign keys.
+    # Report a readiness failure before attempting either check or any writes.
+    if raw.execute('PRAGMA foreign_keys').fetchone() != (1,):
+        raise HTTPException(503, 'Reviewer invitation is not ready.')
 
     try:
         policy = read_policy(raw, assignment_data.manuscript_id)
@@ -616,6 +632,47 @@ class InvitationResponse(BaseModel):
     decision: Literal["accept", "decline"]
 
 
+@router.get('/{assignment_id}/task', summary='Get your reviewer invitation task')
+def reviewer_task(assignment_id: int, current_user: User = Depends(require_role('reviewer')),
+                  db: Session = Depends(get_db), mode: MetadataMode = Depends(reviewer_metadata_mode),
+                  artifact_context: DemoArtifactContext | None = Depends(reviewer_demo_artifact_context)):
+    """Return only own neutral task; this does not confer manuscript access."""
+    headers = {'Cache-Control': 'no-store', 'Pragma': 'no-cache'}
+    if type(mode) is not MetadataMode:
+        raise HTTPException(503, 'Task unavailable', headers=headers)
+    try:
+        connection = db.connection()
+        if mode is MetadataMode.EXPERIMENTAL:
+            if connection.dialect.name != 'sqlite':
+                raise MetadataSchemaUnavailable('Task unavailable')
+            raw = connection.connection.driver_connection
+            if not raw.in_transaction:
+                connection.exec_driver_sql('BEGIN')
+            _security_context(raw, current_user.user_id)
+        assignment = db.scalar(select(ReviewAssignment).where(
+            ReviewAssignment.assignment_id == assignment_id,
+            ReviewAssignment.reviewer_id == current_user.user_id))
+        if assignment is None:
+            raise HTTPException(404, 'Task not found', headers=headers)
+        manuscript = db.get(Manuscript, assignment.manuscript_id)
+        task = reviewer_assignment_task(db, assignment, manuscript)
+        # Only the ordinary submission path is classified here. Experimental
+        # review submission has additional artifact-context checks and remains
+        # unavailable until those can be verified without guessing its contract.
+        if (mode is MetadataMode.DISABLED and task['task_message'] ==
+                'Your assignment is active; current review action eligibility is unconfirmed.' and
+                reviewer_document_available(db, current_user, assignment_id, mode, artifact_context)):
+            task = {**task, 'task_state':'action_required',
+                    'task_message':'Complete and submit your review using the review form.',
+                    'action_label':'View review form',
+                    'permitted_action_target':f'#review-action-{assignment_id}'}
+        return JSONResponse(task, headers=headers)
+    except MetadataAccessDenied:
+        raise HTTPException(404, 'Task not found', headers=headers) from None
+    except (MetadataSchemaUnavailable, sqlite3.DatabaseError, SQLAlchemyError):
+        raise HTTPException(503, 'Task unavailable', headers=headers) from None
+
+
 @router.post("/{assignment_id}/invitation-response")
 def respond_reviewer_invitation(assignment_id: int, data: InvitationResponse, current_user: User = Depends(require_role("reviewer")), db: Session = Depends(get_db)):
     assignment = db.get(ReviewAssignment, assignment_id)
@@ -627,7 +684,14 @@ def respond_reviewer_invitation(assignment_id: int, data: InvitationResponse, cu
     if manuscript is None or manuscript.status not in ("ready_for_peer_review", "revised") or manuscript.review_round != assignment.review_round:
         raise HTTPException(status_code=409, detail="This review round is no longer open")
     new_status = "accepted" if data.decision == "accept" else "declined"
-    result = db.execute(update(ReviewerInvitation).where(ReviewerInvitation.assignment_id == assignment_id, ReviewerInvitation.status == "pending").values(status=new_status, responded_at=datetime.now(timezone.utc)))
+    conditions = [ReviewerInvitation.assignment_id == assignment_id, ReviewerInvitation.status == "pending"]
+    try:
+        if inspect(db.connection()).has_table('reviewer_invitation_invalidations'):
+            conditions.append(~select(ReviewerInvitationInvalidation.invalidation_id).where(
+                ReviewerInvitationInvalidation.assignment_id == assignment_id).exists())
+        result = db.execute(update(ReviewerInvitation).where(*conditions).values(status=new_status, responded_at=datetime.now(timezone.utc)))
+    except SQLAlchemyError:
+        raise HTTPException(status_code=503, detail="Invitation unavailable") from None
     if result.rowcount != 1:
         raise HTTPException(status_code=409, detail="Invitation is not pending")
     recipient = db.get(User, assignment.assigned_by)
@@ -678,7 +742,7 @@ def get_my_assignments(
     ],
     db: Session = Depends(get_db),
     metadata_mode: MetadataMode = Depends(reviewer_metadata_mode),
-    artifact_context: ReviewerArtifactContext | None = Depends(reviewer_artifact_context),
+    artifact_context: DemoArtifactContext | None = Depends(reviewer_demo_artifact_context),
 ):
     if type(metadata_mode) is not MetadataMode:
         raise HTTPException(status_code=503, detail='Reviewer assignments unavailable', headers={'Cache-Control': 'no-store', 'Pragma': 'no-cache'})
@@ -863,6 +927,6 @@ def download_assigned_review_pdf(
     ],
     db: Session = Depends(get_db),
     metadata_mode: MetadataMode = Depends(reviewer_metadata_mode),
-    artifact_context: ReviewerArtifactContext | None = Depends(reviewer_artifact_context),
+    artifact_context: DemoArtifactContext | None = Depends(reviewer_demo_artifact_context),
 ):
     return release_reviewer_document(db, current_user, assignment_id, metadata_mode, artifact_context)

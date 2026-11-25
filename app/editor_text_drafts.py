@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from app.config import guard_demo_path
 from app import online_versions
-from app.models import (AuthorAgreement, FinalEditorInvitation, FinalEditingSubmission,
+from app.models import (FinalEditorInvitation, FinalEditingSubmission,
     FinalEditingSubmissionInvitation, InitialEditorInvitation, InitialEditingSubmission,
     Manuscript, PreReviewConfirmation, ReviewRoundFile, User)
 
@@ -60,6 +60,7 @@ def _read(path, root):
 
 def state(db, root, manuscript_id, actor, stage, *, with_source=False):
     """Recheck manuscript scope, invitation and stage on every access."""
+    from app.editor_invitation_revocation import effective_status
     role = db.scalar(select(User.role).where(User.user_id == actor.user_id))
     manuscript = db.get(Manuscript, manuscript_id)
     if role != 'editor' or manuscript is None or stage not in ('initial', 'final'):
@@ -69,7 +70,7 @@ def state(db, root, manuscript_id, actor, stage, *, with_source=False):
             InitialEditorInvitation.manuscript_id == manuscript_id,
             InitialEditorInvitation.editor_id == actor.user_id,
             InitialEditorInvitation.status == 'accepted').order_by(InitialEditorInvitation.invitation_id.desc()).limit(1))
-        if not invitation or manuscript.status != 'initial_editing':
+        if not invitation or effective_status(db, 'initial', invitation) != 'accepted' or manuscript.status != 'initial_editing':
             raise HTTPException(404, 'Editing unavailable')
         latest = db.scalar(select(InitialEditingSubmission).where(
             InitialEditingSubmission.manuscript_id == manuscript_id).order_by(InitialEditingSubmission.submission_id.desc()).limit(1))
@@ -84,8 +85,8 @@ def state(db, root, manuscript_id, actor, stage, *, with_source=False):
             FinalEditorInvitation.manuscript_id == manuscript_id,
             FinalEditorInvitation.editor_id == actor.user_id,
             FinalEditorInvitation.status == 'accepted').order_by(FinalEditorInvitation.invitation_id.desc()).limit(1))
-        agreement = db.scalar(select(AuthorAgreement).where(AuthorAgreement.manuscript_id == manuscript_id).order_by(AuthorAgreement.agreement_id.desc()).limit(1))
-        if not invitation or manuscript.status != 'final_editing' or not agreement or agreement.status != 'accepted':
+        from app.routers.final_workflow import accepted_current_agreement
+        if not invitation or effective_status(db, 'final', invitation) != 'accepted' or manuscript.status != 'final_editing' or not accepted_current_agreement(db, manuscript):
             raise HTTPException(404, 'Editing unavailable')
         latest = db.scalar(select(FinalEditingSubmission).join(FinalEditingSubmissionInvitation,
             FinalEditingSubmissionInvitation.submission_id == FinalEditingSubmission.submission_id).where(
@@ -110,6 +111,9 @@ def state(db, root, manuscript_id, actor, stage, *, with_source=False):
     if not any(source.resolve().parent == parent.resolve() for parent in allowed):
         raise HTTPException(409, 'Source document unavailable')
     text = _read(source, root/'uploads')
+    if source_path == manuscript.file_path:
+        from app.controlled_source_authorization import authorize_source
+        authorize_source(db, actor, manuscript_id, text.encode('utf-8'), invitation_kind=stage)
     fingerprint = hashlib.sha256((source_path+'\0'+text).encode('utf-8')).hexdigest()
     directory = guard_demo_path(root/'uploads'/'online_editor'/str(manuscript_id)/stage/str(actor.user_id)/str(invitation.invitation_id)/fingerprint)
     _reject_symlinks(directory, root/'uploads')

@@ -1,8 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { API_URL, submitAction, actionFailureMessage } from "./api";
 
-export default function OnlineDocumentEditor({ manuscriptId, token, onChanged, onDirtyChange, stage, onUseSaved, onVersion }) {
+export default function OnlineDocumentEditor(props) {
+  // A changed account, manuscript or stage must never reuse another document's state.
   const [open, setOpen] = useState(false);
+  return <OnlineDocumentEditorInstance key={JSON.stringify([props.token, props.manuscriptId, props.stage])} {...props} open={open} setOpen={setOpen} />;
+}
+
+function OnlineDocumentEditorInstance({ manuscriptId, token, onChanged, onDirtyChange, stage, onUseSaved, onVersion, open, setOpen }) {
+  const active = useRef(false);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   const [data, setData] = useState(null);
   const [text, setText] = useState("");
   const [error, setError] = useState("");
@@ -40,7 +47,7 @@ export default function OnlineDocumentEditor({ manuscriptId, token, onChanged, o
       await submitAction(`${API_URL}${endpoint}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ content: text, expected_version: data.version, change_note: note || null }) });
       const response = await fetch(`${API_URL}${endpoint}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!response.ok) throw new Error('Version saved, but the document could not be reloaded. Close and reopen it.');
-      const value = await response.json(); setData(value); setText(value.content); setNote(''); onVersion?.(value.version); onDirtyChange?.(false); setMessage('Version saved. Submission and approval are separate.');
+      const value = await response.json(); if (!active.current) return; setData(value); setText(value.content); setNote(''); onVersion?.(value.version); onDirtyChange?.(false); setMessage('Version saved. Submission and approval are separate.');
       await onChanged?.();
     } catch (e) { setError(actionFailureMessage(e)); setUncertain(true); }
     finally { setBusy(false); }
@@ -50,7 +57,8 @@ export default function OnlineDocumentEditor({ manuscriptId, token, onChanged, o
     try {
       const response = await fetch(`${API_URL}${versionPath(item)}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!response.ok) throw new Error('Version download unavailable');
-      const url = URL.createObjectURL(await response.blob()); const link = document.createElement('a');
+      const blob = await response.blob(); if (!active.current) return;
+      const url = URL.createObjectURL(blob); const link = document.createElement('a');
       link.href = url; link.download = item.filename; link.click(); URL.revokeObjectURL(url);
     } catch (e) { setError(e.message); }
   };
@@ -61,6 +69,7 @@ export default function OnlineDocumentEditor({ manuscriptId, token, onChanged, o
       const response = await fetch(`${API_URL}${versionPath(item)}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!response.ok) throw new Error('Version unavailable');
       const content = await response.text();
+      if (!active.current) return;
       setText(content); onDirtyChange?.(content !== data.content);
       setMessage('Historical draft opened. Save to create a new version.');
     } catch (e) { setError(e.message); }
@@ -73,6 +82,7 @@ export default function OnlineDocumentEditor({ manuscriptId, token, onChanged, o
       const response = await fetch(`${API_URL}${endpoint}`, {headers:{Authorization:`Bearer ${token}`}});
       if (!response.ok) throw new Error('Saved draft is unavailable; reopen the editor.');
       const latest = await response.json();
+      if (!active.current) return;
       if (latest.version !== data.version) throw new Error('Draft changed; reopen the editor before selecting it.');
       onUseSaved?.(new File([latest.content], 'online-edit.txt', {type:'text/plain'}), latest.version);
       setMessage('Saved draft selected for the submission form. Submit separately when ready.');
@@ -84,7 +94,7 @@ export default function OnlineDocumentEditor({ manuscriptId, token, onChanged, o
     {error && <p role="alert">{error}</p>}{message && <p role="status">{message}</p>}
     {data && <><label>Document text<textarea value={text} onChange={event => { setText(event.target.value); onDirtyChange?.(event.target.value !== data.content); }} rows={14} /></label>
       <label>Change note (optional)<input value={note} maxLength={500} onChange={event => setNote(event.target.value)} /></label>
-      <button type="button" onClick={save} disabled={busy || !dirty || uncertain}>Save Version</button>
+      <button type="button" onClick={save} disabled={busy || !dirty || uncertain}>Save version</button>
       {onUseSaved && data.history.length > 0 && <button type="button" onClick={useSaved} disabled={busy || dirty || uncertain}>Use saved draft</button>}
       <details><summary>Version History</summary><p>Saved drafts; submission and approvals are separate.</p>{data.history.length ? <ol>{data.history.map((item, index) => (
           <li key={item.id ?? `${item.filename ?? "version"}-${item.number ?? index}`}>Version {item.number} · {item.saved_at} · {item.editor}{item.is_current ? ' · latest' : ''}{item.change_note ? ` · ${item.change_note}` : ''} <button type="button" disabled={busy} onClick={() => reopen(item)}>Open version</button> <button type="button" onClick={() => download(item)}>Download</button></li>))}</ol> : <p>No online versions saved yet.</p>}</details>

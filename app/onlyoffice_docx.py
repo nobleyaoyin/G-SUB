@@ -1,25 +1,53 @@
 """Default-disabled DOCX editing helpers. No automatic migrations or services."""
 import hashlib
 import http.client
+import json
 import os
 from pathlib import Path
 import re
 import stat
 from urllib.parse import unquote, urlsplit
 
+import jwt
 from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app import editor_text_drafts, online_versions
 from app.config import DATA_ROOT, guard_demo_path
-from app.models import (AuthorAgreement, FinalEditingSubmission, FinalEditingSubmissionInvitation,
+from app.models import (FinalEditingSubmission, FinalEditingSubmissionInvitation,
                         FinalEditorInvitation, InitialEditingSubmission, InitialEditorInvitation,
                         Manuscript, PreReviewConfirmation, ReviewAssignment, ReviewRoundFile, User)
 
 BASE_DIR = DATA_ROOT
 MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 MAX = 10 * 1024 * 1024
+
+
+def request_force_save(session_id, secret, server_origin):
+    """Ask the configured local document server to save; a callback confirms storage."""
+    port = urlsplit(server_origin).port
+    command = {'c': 'forcesave', 'key': session_id}
+    payload = json.dumps({**command, 'token': jwt.encode(command, secret, algorithm='HS256')})
+    conn = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
+    try:
+        conn.request('POST', '/coauthoring/CommandService.ashx', body=payload,
+                     headers={'Content-Type': 'application/json'})
+        response = conn.getresponse()
+        raw = response.read(8193)
+        if response.status != 200 or len(raw) > 8192:
+            raise HTTPException(503, 'Could not request a save from the document server')
+        result = json.loads(raw)
+        if not isinstance(result, dict) or type(result.get('error')) is not int:
+            raise HTTPException(503, 'Could not request a save from the document server')
+        if result['error'] == 4:
+            raise HTTPException(409, 'The editor could not produce another save. Keep it open and try Download As.')
+        if result['error'] != 0 or (result.get('key') is not None and result['key'] != session_id):
+            raise HTTPException(503, 'Could not request a save from the document server')
+    except (OSError, ValueError, UnicodeError):
+        raise HTTPException(503, 'Could not request a save from the document server') from None
+    finally:
+        conn.close()
 
 
 def config():
@@ -86,9 +114,11 @@ def source(db, manuscript_id, actor_id, stage):
             raise HTTPException(409, 'Editing unavailable after reviewer assignment')
         ref, invitation = m.file_path, 'author'
     elif stage in ('initial', 'final') and user.role == 'editor':
+        from app.editor_invitation_revocation import effective_status
         if stage == 'initial':
             inv = db.scalar(select(InitialEditorInvitation).where(InitialEditorInvitation.manuscript_id == manuscript_id, InitialEditorInvitation.editor_id == actor_id, InitialEditorInvitation.status == 'accepted').order_by(InitialEditorInvitation.invitation_id.desc()).limit(1))
             if not inv or m.status != 'initial_editing': raise HTTPException(404, 'Editing unavailable')
+            if effective_status(db, 'initial', inv) != 'accepted': raise HTTPException(403, 'Document unavailable')
             latest = db.scalar(select(InitialEditingSubmission).where(InitialEditingSubmission.manuscript_id == manuscript_id).order_by(InitialEditingSubmission.submission_id.desc()).limit(1))
             if latest:
                 confirmation = db.scalar(select(PreReviewConfirmation).where(PreReviewConfirmation.submission_id == latest.submission_id).order_by(PreReviewConfirmation.confirmation_id.desc()).limit(1))
@@ -96,8 +126,9 @@ def source(db, manuscript_id, actor_id, stage):
             ref = latest.file_path if latest else m.file_path
         else:
             inv = db.scalar(select(FinalEditorInvitation).where(FinalEditorInvitation.manuscript_id == manuscript_id, FinalEditorInvitation.editor_id == actor_id, FinalEditorInvitation.status == 'accepted').order_by(FinalEditorInvitation.invitation_id.desc()).limit(1))
-            agreement = db.scalar(select(AuthorAgreement).where(AuthorAgreement.manuscript_id == manuscript_id).order_by(AuthorAgreement.agreement_id.desc()).limit(1))
-            if not inv or m.status != 'final_editing' or not agreement or agreement.status != 'accepted': raise HTTPException(404, 'Editing unavailable')
+            from app.routers.final_workflow import accepted_current_agreement
+            if not inv or m.status != 'final_editing' or not accepted_current_agreement(db, m): raise HTTPException(404, 'Editing unavailable')
+            if effective_status(db, 'final', inv) != 'accepted': raise HTTPException(403, 'Document unavailable')
             latest = db.scalar(select(FinalEditingSubmission).join(FinalEditingSubmissionInvitation, FinalEditingSubmissionInvitation.submission_id == FinalEditingSubmission.submission_id).where(FinalEditingSubmission.manuscript_id == manuscript_id).order_by(FinalEditingSubmission.submission_id.desc()).limit(1))
             if latest and latest.status not in ('eic_revision_requested','author_revision_requested'): raise HTTPException(409, 'Submission awaiting approval')
             round_file = db.scalar(select(ReviewRoundFile).where(ReviewRoundFile.manuscript_id == manuscript_id, ReviewRoundFile.review_round == m.review_round))
@@ -114,6 +145,9 @@ def source(db, manuscript_id, actor_id, stage):
     root = BASE_DIR.resolve() / 'uploads'
     allowed = [root / kind / str(manuscript_id) for kind in ('manuscripts','initial_editing','final_editing')]
     content = _read(ref, allowed)
+    if stage in ('initial', 'final') and ref == m.file_path:
+        from app.controlled_source_authorization import authorize_source
+        authorize_source(db, user, manuscript_id, content, invitation_kind=stage)
     scope = 'docx:' + hashlib.sha256((stage + '\0' + invitation + '\0' + ref).encode() + b'\0' + content).hexdigest()
     return user, m, ref, content, scope
 
@@ -137,7 +171,7 @@ def fetch(url, server_origin):
     try:
         conn.request('GET', p.path + ('?' + p.query if p.query else ''))
         response = conn.getresponse()
-        if response.status != 200: raise HTTPException(400, 'Document download failed')
+        if response.status != 200: raise HTTPException(503, 'Document server unavailable')
         content = response.read(MAX + 1)
         from app.routers.manuscripts import validate_manuscript_file
         validate_manuscript_file('document.docx', content)

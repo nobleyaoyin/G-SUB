@@ -20,7 +20,7 @@ it("selects a mode and uses the guarded invitation endpoint", async () => {
   render(<BlindReviewPanel manuscriptId={3} round={1} status="revised" token="synthetic" />);
   fireEvent.change(await screen.findByLabelText("Review mode"), { target: { value: "single_blind" } });
   fireEvent.click(screen.getByRole("button", { name: "Save review mode" }));
-  await waitFor(() => expect(screen.getByText("Invitation path: /assignments/review-invitations")).toBeTruthy());
+  await waitFor(() => expect(screen.getByText("Invitation path: /assignments/demo-invitations")).toBeTruthy());
   expect(screen.getByText(/Mode: Single-Blind/)).toBeTruthy();
 });
 

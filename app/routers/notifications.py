@@ -14,13 +14,21 @@ router = APIRouter(
 )
 
 
-def notification_to_dict(notification: Notification):
+def notification_to_dict(notification: Notification, current_user: User | None = None):
+    message = notification.message
+    notification_type = notification.notification_type
+    if current_user is not None and current_user.role == "reviewer":
+        # Historical free-text messages have no anonymity provenance. Do not
+        # expose them to reviewers; keep the original database record intact.
+        message = ("You have a reviewer invitation." if notification.notification_type == "review_invitation"
+                   else "You have a notification.")
+        notification_type = "review_invitation" if notification.notification_type == "review_invitation" else "review_update"
     return {
         "notification_id": notification.notification_id,
         "user_id": notification.user_id,
         "manuscript_id": notification.manuscript_id,
-        "notification_type": notification.notification_type,
-        "message": notification.message,
+        "notification_type": notification_type,
+        "message": message,
         "is_read": notification.is_read,
         "created_at": notification.created_at,
     }
@@ -38,7 +46,7 @@ def get_my_notifications(
         .order_by(Notification.created_at.desc())
     ).all()
 
-    return [notification_to_dict(item) for item in notifications]
+    return [notification_to_dict(item, current_user) for item in notifications]
 
 
 # Count unread notifications
@@ -83,4 +91,4 @@ def mark_notification_as_read(
     db.commit()
     db.refresh(notification)
 
-    return notification_to_dict(notification)
+    return notification_to_dict(notification, current_user)

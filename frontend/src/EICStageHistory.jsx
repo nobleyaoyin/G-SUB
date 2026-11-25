@@ -1,5 +1,6 @@
+import {workflowStatusLabel} from './workflowStatus';
 // Read-only summaries of records already returned to the authorized EIC.
-const label = value => typeof value === 'string' && value ? value.replaceAll('_', ' ') : 'unavailable';
+const label = value => value ? workflowStatusLabel(value) : 'Unavailable';
 const date = value => {
   if (!value || Number.isNaN(Date.parse(value))) return 'Date unavailable';
   return new Date(value).toLocaleString();
@@ -46,7 +47,7 @@ export default function EICStageHistory({stage, overview, formatting, onDownload
     <h5>Final editor invitations</h5>{list(overview.final_invitations, 'No final editor invitations are listed.', (item,i) => <li key={item.invitation_id ?? i}>Invitation #{item.invitation_id}: {label(item.status)} · invited {date(item.invited_at)} · response {date(item.responded_at)}</li>, 'invited_at')}
     <h5>Final editing submissions</h5>{list(overview.final_workflow_submissions, 'No final editing submissions are listed.', (item,i) => <li key={item.submission_id ?? i}>Submission #{item.submission_id}: {label(item.status)} · {date(item.created_at)}</li>, 'created_at')}
   </>;
-  if (stage === 'Formatting') content = !formatting ? <p>Formatting history is unavailable.</p> : list(formatting.submissions, 'No formatting submissions are listed.', (item,i) => <li key={item.submission_id ?? i}>Submission #{item.submission_id}: {label(item.status)} · {date(item.created_at)}</li>, 'created_at');
+  if (stage === 'Formatting' || stage === 'Proofing') content = !formatting ? <p>Formatting history is unavailable.</p> : list(formatting.submissions, 'No formatting submissions are listed.', (item,i) => <li key={item.submission_id ?? i}>Submission #{item.submission_id}: {label(item.status)} · {date(item.created_at)}</li>, 'created_at');
   if (stage === 'Publication') content = !formatting ? <p>Publication record is unavailable.</p> : formatting.publication && overview.manuscript?.status === 'published' && formatting.status === 'published' ? <>
     <p>Publication recorded in the local prototype · {date(formatting.publication.published_at)}.</p>
     {Number.isInteger(formatting.publication.submission_id) && <button type="button" onClick={() => onDownload(`/formatting/submissions/${formatting.publication.submission_id}/download`)}>Download published document</button>}

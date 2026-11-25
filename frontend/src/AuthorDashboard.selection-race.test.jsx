@@ -12,81 +12,53 @@ const docxCallbacks = vi.hoisted(() => ({ pending: null }));
 vi.mock('./OnlineDocxEditor', () => ({default: ({onSelect}) => <><button onClick={() => onSelect('docx-version')}>Select synthetic DOCX</button><button onClick={() => { docxCallbacks.pending = () => onSelect('stale-docx'); }}>Begin delayed DOCX selection</button></>}));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-it('ignores a late TXT save completion after a replacement DOCX is selected', async () => {
-  const item = {manuscript_id: 12, title: 'Race draft', abstract: 'Synthetic', status: 'draft', has_pdf: true, file_type: 'txt', created_at: '2026-01-01'};
-  const json = value => ({ok: true, headers: new Headers({'content-type': 'application/json'}), json: async () => value});
-  let finishReload; let txtReads = 0;
-  const fetchMock = vi.fn((url, options = {}) => {
-    if (url.endsWith('/online-text') && options.method === 'POST') return Promise.resolve(json({}));
-    if (url.endsWith('/online-text')) {
-      if (++txtReads === 1) return Promise.resolve(json({content: 'original', version: 0, history: []}));
-      return new Promise(resolve => { finishReload = resolve; });
-    }
-    if (url.endsWith('/upload')) return Promise.resolve(json({}));
-    if (url.endsWith('/manuscripts/12')) return Promise.resolve(json({...item, file_type: 'docx'}));
-    if (url.includes('/submit')) return Promise.resolve(json({}));
-    if (url.includes('/notes')) return Promise.resolve(json([]));
-    return Promise.resolve(json([item]));
-  });
-  vi.stubGlobal('fetch', fetchMock); vi.spyOn(window, 'confirm').mockReturnValue(true);
-  render(<AuthorDashboard user={{name: 'Synthetic'}} token="synthetic" />);
-  fireEvent.click(within((await screen.findByText('Race draft')).closest('.manuscript-card')).getByRole('button', {name: 'Open manuscript'}));
-  const card = screen.getByText('Race draft').closest('.manuscript-card');
-  fireEvent.click(within(card).getByRole('button', {name: 'Edit document (TXT)'}));
-  fireEvent.change(await screen.findByLabelText('Document text'), {target: {value: 'edited'}});
-  fireEvent.click(screen.getByRole('button', {name: 'Save Version'}));
-  await waitFor(() => expect(finishReload).toBeTypeOf('function'));
-  fireEvent.change(card.querySelector('input[type=file]'), {target: {files: [new File(['docx'], 'replacement.docx')]}});
-  fireEvent.click(await screen.findByRole('button', {name: 'Select synthetic DOCX'}));
-  await act(async () => { finishReload(json({content: 'edited', version: 7, history: [{is_current: true}]})); });
-  fireEvent.click(within(card).getByRole('button', {name: 'Submit Manuscript'}));
-  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url.includes('/submit?selected_docx_version=docx-version'))).toBe(true));
-  expect(fetchMock.mock.calls.some(([url]) => url.includes('expected_online_version=7'))).toBe(false);
-});
+async function chooseWizardReplacement(name) {
+  fireEvent.change(screen.getByLabelText(/Select a Replacement File/),{target:{files:[new File(['synthetic'],name)]}});
+  fireEvent.click(screen.getByRole('button',{name:'Upload Replacement File'}));
+}
 
+it('blocks replacement while a TXT edit remains unsaved', async () => {
+  const item={manuscript_id:12,title:'Race draft',abstract:'Synthetic',status:'draft',has_pdf:true,file_type:'txt',created_at:'2026-01-01'};
+  const json=value=>({ok:true,headers:new Headers({'content-type':'application/json'}),json:async()=>value});
+  const fetchMock=vi.fn(url=>Promise.resolve(json(url.endsWith('/online-text')?{content:'original',version:0,history:[]}:url.includes('/notes')?[]:[item])));
+  vi.stubGlobal('fetch',fetchMock);render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" />);
+  fireEvent.click(within((await screen.findByText('Race draft')).closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
+  fireEvent.click(screen.getByRole('button',{name:'Continue Process'}));
+  fireEvent.click(screen.getByRole('button',{name:'Edit document (TXT)'}));
+  fireEvent.change(await screen.findByLabelText('Document text'),{target:{value:'unsaved edit'}});
+  await chooseWizardReplacement('replacement.docx');
+  expect(await screen.findByText('Save or close the document editor before replacing the file.')).toBeTruthy();
+  expect(fetchMock.mock.calls.some(([url])=>url.endsWith('/upload'))).toBe(false);
+});
 
 it('ignores a late DOCX selection after replacing the source with TXT', async () => {
-  const item = {manuscript_id: 12, title: 'DOCX race', abstract: 'Synthetic', status: 'draft', has_pdf: true, file_type: 'docx', created_at: '2026-01-01'};
-  const json = value => ({ok: true, headers: new Headers({'content-type': 'application/json'}), json: async () => value});
-  const fetchMock = vi.fn((url) => {
-    if (url.endsWith('/online-text')) return Promise.resolve(json({content: 'txt', version: 4, history: [{is_current: true}]}));
-    if (url.endsWith('/upload')) return Promise.resolve(json({}));
-    if (url.endsWith('/manuscripts/12')) return Promise.resolve(json({...item, file_type: 'txt'}));
-    if (url.includes('/submit')) return Promise.resolve(json({}));
-    if (url.includes('/notes')) return Promise.resolve(json([]));
-    return Promise.resolve(json([item]));
-  });
-  vi.stubGlobal('fetch', fetchMock); vi.spyOn(window, 'confirm').mockReturnValue(true);
-  render(<AuthorDashboard user={{name: 'Synthetic'}} token="synthetic" />);
-  fireEvent.click(within((await screen.findByText('DOCX race')).closest('.manuscript-card')).getByRole('button', {name: 'Open manuscript'}));
-  const card = screen.getByText('DOCX race').closest('.manuscript-card');
-  fireEvent.click(within(card).getByRole('button', {name: 'Begin delayed DOCX selection'}));
-  fireEvent.change(card.querySelector('input[type=file]'), {target: {files: [new File(['txt'], 'replacement.txt')]}});
-  fireEvent.click(await screen.findByRole('button', {name: 'Edit document (TXT)'}));
-  await screen.findByLabelText('Document text');
-  await act(async () => { docxCallbacks.pending(); });
-  fireEvent.click(within(card).getByRole('button', {name: 'Submit Manuscript'}));
-  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url.includes('/submit?expected_online_version=4'))).toBe(true));
-  expect(fetchMock.mock.calls.some(([url]) => url.includes('selected_docx_version=stale-docx'))).toBe(false);
+  const item={manuscript_id:12,title:'DOCX race',abstract:'Synthetic',status:'draft',has_pdf:true,file_type:'docx',created_at:'2026-01-01'};
+  const json=value=>({ok:true,headers:new Headers({'content-type':'application/json'}),json:async()=>value});
+  const fetchMock=vi.fn(url=>Promise.resolve(json(url.endsWith('/online-text')?{content:'txt',version:4,history:[{is_current:true}]}:url.endsWith('/upload')?{}:url.endsWith('/manuscripts/12')?{...item,file_type:'txt'}:url.includes('/submit')?{}:url.includes('/notes')?[]:[item])));
+  vi.stubGlobal('fetch',fetchMock);vi.spyOn(window,'confirm').mockReturnValue(true);render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" />);
+  fireEvent.click(within((await screen.findByText('DOCX race')).closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
+  fireEvent.click(screen.getByRole('button',{name:'Continue Process'}));
+  fireEvent.click(screen.getByRole('button',{name:'Begin delayed DOCX selection'}));
+  await chooseWizardReplacement('replacement.txt');await screen.findByRole('heading',{name:'Review Your Submission'});
+  fireEvent.click(screen.getByRole('button',{name:'← Previous'}));
+  fireEvent.click(await screen.findByRole('button',{name:'Edit document (TXT)'}));await screen.findByLabelText('Document text');
+  await act(async()=>{docxCallbacks.pending()});
+  fireEvent.click(screen.getByRole('button',{name:'Continue to Review'}));fireEvent.click(screen.getByRole('button',{name:'Submit Manuscript'}));
+  await waitFor(()=>expect(fetchMock.mock.calls.some(([url])=>url.includes('/submit?expected_online_version=4'))).toBe(true));
+  expect(fetchMock.mock.calls.some(([url])=>url.includes('selected_docx_version=stale-docx'))).toBe(false);
 });
 
-it('preserves the selected DOCX after a failed replacement upload', async () => {
-  const item = {manuscript_id: 12, title: 'Failed upload', abstract: 'Synthetic', status: 'draft', has_pdf: true, file_type: 'docx', created_at: '2026-01-01'};
-  const json = value => ({ok: true, headers: new Headers({'content-type': 'application/json'}), json: async () => value});
-  const fetchMock = vi.fn(url => {
-    if (url.includes('/notes')) return Promise.resolve(json([]));
-    if (url.endsWith('/upload')) return Promise.resolve({ok: false, headers: new Headers({'content-type': 'application/json'}), json: async () => ({detail: 'Upload failed'})});
-    return Promise.resolve(json(url.includes('/submit') ? {} : [item]));
-  });
-  vi.stubGlobal('fetch', fetchMock); vi.spyOn(window, 'confirm').mockReturnValue(true);
-  render(<AuthorDashboard user={{name: 'Synthetic'}} token="synthetic" />);
-  fireEvent.click(within((await screen.findByText('Failed upload')).closest('.manuscript-card')).getByRole('button', {name: 'Open manuscript'}));
-  const card = screen.getByText('Failed upload').closest('.manuscript-card');
-  fireEvent.click(within(card).getByRole('button', {name: 'Select synthetic DOCX'}));
-  fireEvent.change(card.querySelector('input[type=file]'), {target: {files: [new File(['txt'], 'replacement.txt')]}});
-  await screen.findByText('Upload failed');
-  fireEvent.click(within(card).getByRole('button', {name: 'Submit Manuscript'}));
-  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url.includes('/submit?selected_docx_version=docx-version'))).toBe(true));
+it('preserves selected DOCX after a failed wizard replacement upload', async () => {
+  const item={manuscript_id:12,title:'Failed upload',abstract:'Synthetic',status:'draft',has_pdf:true,file_type:'docx',created_at:'2026-01-01'};
+  const json=value=>({ok:true,headers:new Headers({'content-type':'application/json'}),json:async()=>value});
+  const fetchMock=vi.fn(url=>url.endsWith('/upload')?Promise.resolve({ok:false,headers:new Headers({'content-type':'application/json'}),json:async()=>({detail:'Upload failed'})}):Promise.resolve(json(url.includes('/submit')?{}:url.includes('/notes')?[]:[item])));
+  vi.stubGlobal('fetch',fetchMock);vi.spyOn(window,'confirm').mockReturnValue(true);render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" />);
+  fireEvent.click(within((await screen.findByText('Failed upload')).closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
+  fireEvent.click(screen.getByRole('button',{name:'Continue Process'}));fireEvent.click(screen.getByRole('button',{name:'Select synthetic DOCX'}));
+  await chooseWizardReplacement('replacement.txt');await screen.findByText('Upload failed');
+  fireEvent.click(screen.getByRole('button',{name:'Remove selected file'}));
+  fireEvent.click(screen.getByRole('button',{name:'Continue to Review'}));fireEvent.click(screen.getByRole('button',{name:'Submit Manuscript'}));
+  await waitFor(()=>expect(fetchMock.mock.calls.some(([url])=>url.includes('/submit?selected_docx_version=docx-version'))).toBe(true));
 });
 
 it('uses the replacement file for revision submission without a stale DOCX query', async () => {
@@ -98,7 +70,7 @@ it('uses the replacement file for revision submission without a stale DOCX query
   fireEvent.click(within((await screen.findByText('Revision draft')).closest('.manuscript-card')).getByRole('button', {name: 'Open manuscript'}));
   const card = screen.getByText('Revision draft').closest('.manuscript-card');
   fireEvent.click(within(card).getByRole('button', {name: 'Select synthetic DOCX'}));
-  fireEvent.click(within(card).getByRole('button', {name: 'Revise Manuscript'}));
+  fireEvent.click(within(card).getByRole('button', {name: 'Revise Editor Manuscript'}));
   fireEvent.change(screen.getByLabelText(/Revised manuscript file/), {target: {files: [new File(['replacement'], 'replacement.docx')]}});
   fireEvent.submit(screen.getByRole('button', {name: 'Resubmit Manuscript'}).closest('form'));
   await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/manuscripts/12/resubmit'))).toBe(true));
@@ -115,7 +87,7 @@ it.each(['invalid', 'failed'])('preserves selected DOCX after %s revision replac
   fireEvent.click(within((await screen.findByText('Revision preservation')).closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
   const card=screen.getByText('Revision preservation').closest('.manuscript-card');
   fireEvent.click(within(card).getByRole('button',{name:'Select synthetic DOCX'}));
-  fireEvent.click(within(card).getByRole('button',{name:'Revise Manuscript'}));
+  fireEvent.click(within(card).getByRole('button',{name:'Revise Editor Manuscript'}));
   const input=screen.getByLabelText(/Revised manuscript file/);
   fireEvent.change(input,{target:{files:[new File(['data'],failure === 'invalid' ? 'bad.xyz' : 'replacement.docx')]}});
   fireEvent.submit(screen.getByRole('button',{name:'Resubmit Manuscript'}).closest('form'));
@@ -146,13 +118,19 @@ it('keeps online selections isolated between manuscripts', async () => {
   vi.stubGlobal('fetch',fetchMock);vi.spyOn(window,'confirm').mockReturnValue(true);
   render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" />);
   fireEvent.click(within((await screen.findByText('DOCX manuscript')).closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
+  fireEvent.click(screen.getByRole('button',{name:'Continue Process'}));
   fireEvent.click(screen.getByRole('button',{name:'Select synthetic DOCX'}));
-  fireEvent.click(screen.getByRole('button',{name:'Back to Manuscripts'}));
+  fireEvent.click(screen.getByRole('button',{name:'Close submission wizard'}));
+  fireEvent.click(screen.getByRole('button',{name:'Back to manuscripts'}));
   fireEvent.click(within(screen.getByText('TXT manuscript').closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
+  fireEvent.click(screen.getByRole('button',{name:'Continue Process'}));
   fireEvent.click(screen.getByRole('button',{name:'Edit document (TXT)'}));
   await screen.findByLabelText('Document text');
-  fireEvent.click(screen.getByRole('button',{name:'Back to Manuscripts'}));
+  fireEvent.click(screen.getByRole('button',{name:'Close submission wizard'}));
+  fireEvent.click(screen.getByRole('button',{name:'Back to manuscripts'}));
   fireEvent.click(within(screen.getByText('DOCX manuscript').closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
+  fireEvent.click(screen.getByRole('button',{name:'Continue Process'}));
+  fireEvent.click(screen.getByRole('button',{name:'Continue to Review'}));
   fireEvent.click(screen.getByRole('button',{name:'Submit Manuscript'}));
   await waitFor(()=>expect(fetchMock.mock.calls.some(([url])=>url.includes('/manuscripts/12/submit?selected_docx_version=docx-version'))).toBe(true));
 });

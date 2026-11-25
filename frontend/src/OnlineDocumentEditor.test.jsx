@@ -16,7 +16,7 @@ it('opens, saves and reopens the returned synthetic version', async () => {
   await user.click(screen.getByRole('button', {name:'Edit document (TXT)'}));
   const field = await screen.findByLabelText('Document text');
   await user.clear(field); await user.type(field, 'New version');
-  await user.click(screen.getByRole('button', {name:'Save Version'}));
+  await user.click(screen.getByRole('button', {name:'Save version'}));
   expect((await screen.findByRole('status')).textContent).toContain('Version saved');
   await user.click(screen.getByText('Version History'));
   expect(screen.getByText(/synthetic time/)).toBeTruthy();
@@ -78,5 +78,5 @@ it('reopens a historical draft and keeps the current version as the save base', 
   await user.click(screen.getByText('Version History'));
   await user.click(screen.getByRole('button',{name:'Open version'}));
   await waitFor(()=>expect(screen.getByLabelText('Document text').value).toBe('Earlier'));
-  expect(screen.getByRole('button',{name:'Save Version'}).disabled).toBe(false);
+  expect(screen.getByRole('button',{name:'Save version'}).disabled).toBe(false);
 });

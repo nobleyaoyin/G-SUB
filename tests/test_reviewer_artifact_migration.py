@@ -38,6 +38,11 @@ class ArtifactMigrationTests(unittest.TestCase):
             )
             db.commit()
 
+        # The assignment endpoint now requires an EIC-selected review policy.
+        self.fx.f.current = self.fx.eic
+        selected = self.fx.f.client.put(
+            f'/eic/manuscripts/{self.fx.mid}/review-policy', json={'mode': 'single_blind'})
+        self.assertEqual(selected.status_code, 200, selected.text)
         result = self.fx.f.assign(self.fx.f.reviewer, 1)
         self.assertEqual(result.status_code, 201)
         self.assignment = result.json()['assignment_id']
