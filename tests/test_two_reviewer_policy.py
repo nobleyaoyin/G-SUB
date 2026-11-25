@@ -29,8 +29,11 @@ class TwoReviewerPolicyTest(ReviewerDownloadsTest):
         self.assertIsNotNone(self.db.get(models.ManuscriptReviewPolicy, self.mid))
         # Existing isolated Stage 3 fixture already has the confirmed PDF and editor.
         self.manuscript.status = 'ready_for_peer_review'; self.db.commit()
+        self.select_single_blind_policy()
 
     def invite(self, reviewer):
+        self.activate_reviewer(reviewer)
+        self.db.commit()
         self.current = self.editor
         result = self.client.post('/assignments/', json={'manuscript_id':self.mid, 'reviewer_id':reviewer.user_id, 'review_round':self.manuscript.review_round})
         self.assertEqual(result.status_code, 201, result.text)
@@ -198,7 +201,8 @@ class TwoReviewerPolicyTest(ReviewerDownloadsTest):
         round2a=self.invite(self.reviewer); self.respond(self.reviewer,round2a,'accept')
         self.current=self.reviewer
         self.assertEqual(self.client.get(f'/assignments/{round2a}/download').content,revised)
-        self.assertEqual(self.client.get(f'/assignments/{a}/download').content,b'%PDF-first')
+        self.assertEqual(self.client.get(f'/assignments/{a}/download').status_code,409)
+        self.assertEqual((self.root / self.pdf).read_bytes(), b'%PDF-first')
         self.submit_review(self.reviewer,round2a)
         self.assertEqual(self.progress()['completed_distinct'],1)
         self.assertEqual(self.decision().status_code,409)
@@ -236,6 +240,7 @@ class TwoReviewerPolicyTest(ReviewerDownloadsTest):
 
     def test_legacy_manuscript_keeps_existing_single_review_rule(self):
         self.assertIsNone(self.db.get(models.ManuscriptReviewPolicy,self.mid))
+        self.select_single_blind_policy()
         aid=self.invite(self.reviewer); self.respond(self.reviewer,aid,'accept'); self.submit_review(self.reviewer,aid)
         self.assertEqual(self.progress()['policy'],'legacy')
         self.assertEqual(self.decision().status_code,201)

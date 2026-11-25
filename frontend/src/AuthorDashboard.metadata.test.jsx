@@ -20,19 +20,19 @@ function setup(fail=false){
 }
 it('saves one field while preserving another unsaved field',async()=>{
  const requests=setup();const card=(await screen.findByText('Original title')).closest('.manuscript-card');fireEvent.click(within(card).getByRole('button',{name:'Open manuscript'}));
- fireEvent.click(screen.getByRole('button',{name:'Edit Title'}));fireEvent.click(screen.getByRole('button',{name:'Edit Abstract'}));
+ fireEvent.click(screen.getByRole('button',{name:'Edit title'}));fireEvent.click(screen.getByRole('button',{name:'Edit abstract'}));
  fireEvent.change(screen.getByLabelText('Title'),{target:{value:'New title'}});fireEvent.change(screen.getByLabelText('Abstract'),{target:{value:'Unsaved abstract'}});
- fireEvent.click(screen.getByRole('button',{name:'Save Title'}));
+ fireEvent.click(screen.getByRole('button',{name:'Save title'}));
  await waitFor(()=>expect(requests).toEqual([{title:'New title'}]));
  await waitFor(()=>expect(screen.getByLabelText('Abstract').value).toBe('Unsaved abstract'));
- fireEvent.click(screen.getByRole('button',{name:'Save Abstract'}));
+ fireEvent.click(screen.getByRole('button',{name:'Save abstract'}));
  await waitFor(()=>expect(requests).toEqual([{title:'New title'},{abstract:'Unsaved abstract'}]));
 });
 it('retains an unsaved field after a stale conflict and permits cancellation',async()=>{
  setup(true);const card=(await screen.findByText('Original title')).closest('.manuscript-card');fireEvent.click(within(card).getByRole('button',{name:'Open manuscript'}));
- fireEvent.click(screen.getByRole('button',{name:'Edit Title'}));fireEvent.change(screen.getByLabelText('Title'),{target:{value:'Unsaved'}});fireEvent.click(screen.getByRole('button',{name:'Save Title'}));
+ fireEvent.click(screen.getByRole('button',{name:'Edit title'}));fireEvent.change(screen.getByLabelText('Title'),{target:{value:'Unsaved'}});fireEvent.click(screen.getByRole('button',{name:'Save title'}));
  expect(await screen.findByText(/This field changed elsewhere/)).toBeTruthy();expect(screen.getByLabelText('Title').value).toBe('Unsaved');
- fireEvent.click(screen.getByRole('button',{name:'Cancel Title'}));expect(screen.queryByLabelText('Title')).toBeNull();
+ fireEvent.click(screen.getByRole('button',{name:'Cancel title'}));expect(screen.queryByLabelText('Title')).toBeNull();
 });
 it('keeps field loading and failures independent during concurrent saves',async()=>{
  let item={manuscript_id:7,title:'Original title',abstract:'Original abstract',status:'draft',created_at:'2026-01-01',has_pdf:false};
@@ -44,18 +44,18 @@ it('keeps field loading and failures independent during concurrent saves',async(
  }));
  render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic"/>);
  fireEvent.click(within((await screen.findByText('Original title')).closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
- fireEvent.click(screen.getByRole('button',{name:'Edit Title'}));fireEvent.click(screen.getByRole('button',{name:'Edit Abstract'}));
+ fireEvent.click(screen.getByRole('button',{name:'Edit title'}));fireEvent.click(screen.getByRole('button',{name:'Edit abstract'}));
  fireEvent.change(screen.getByLabelText('Title'),{target:{value:'Unsaved title'}});fireEvent.change(screen.getByLabelText('Abstract'),{target:{value:'Saved abstract'}});
- fireEvent.click(screen.getByRole('button',{name:'Save Title'}));
+ fireEvent.click(screen.getByRole('button',{name:'Save title'}));
  await waitFor(()=>expect(patches).toEqual(['title']));
- expect(screen.getByRole('button',{name:'Saving Title...'}).disabled).toBe(true);
- expect(screen.getByRole('button',{name:'Save Abstract'}).disabled).toBe(false);
- fireEvent.click(screen.getByRole('button',{name:'Save Abstract'}));
+ expect(screen.getByRole('button',{name:'Saving title...'}).disabled).toBe(true);
+ expect(screen.getByRole('button',{name:'Save abstract'}).disabled).toBe(false);
+ fireEvent.click(screen.getByRole('button',{name:'Save abstract'}));
  await waitFor(()=>expect(patches).toEqual(['title','abstract']));
  fireEvent.submit(screen.getByLabelText('Title').closest('form'));expect(patches).toEqual(['title','abstract']);
  pending.title();expect(await screen.findByText('Title conflict')).toBeTruthy();
  expect(screen.getByLabelText('Title').value).toBe('Unsaved title');
- expect(screen.getByRole('button',{name:'Saving Abstract...'}).disabled).toBe(true);
+ expect(screen.getByRole('button',{name:'Saving abstract...'}).disabled).toBe(true);
  pending.abstract();await waitFor(()=>expect(screen.queryByLabelText('Abstract')).toBeNull());
  expect(screen.getByText('Title conflict')).toBeTruthy();expect(screen.getByLabelText('Title').value).toBe('Unsaved title');
 });

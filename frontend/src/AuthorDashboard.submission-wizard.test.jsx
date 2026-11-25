@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {webcrypto} from 'node:crypto';
 import {
   cleanup,
   fireEvent,
@@ -9,6 +10,8 @@ import {
 } from "@testing-library/react";
 
 import AuthorDashboard from "./AuthorDashboard";
+
+beforeEach(()=>{const values=new Map();vi.stubGlobal('crypto',webcrypto);vi.stubGlobal('localStorage',{getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,String(value)),removeItem:key=>values.delete(key),clear:()=>values.clear()});});
 
 vi.mock("./NotificationBell", () => ({
   default: () => <div>Notification bell</div>,
@@ -38,6 +41,7 @@ vi.mock("./ManuscriptProgress", () => ({
 
 afterEach(() => {
   cleanup();
+  window.localStorage.clear();
   vi.unstubAllGlobals();
 });
 
@@ -68,10 +72,22 @@ function setupFetch(initialManuscript = null, options = {}) {
     : null;
 
   let submitAttempts = 0;
+  let guidedDraft = null;
+  let uploadReceipt = null;
 
   const fetchMock = vi.fn(async (url, request = {}) => {
     const path = String(url);
     const method = request.method || "GET";
+
+    if (path.endsWith('/author/submission-drafts/configuration')) return jsonResponse({submission_types:['Review Article']});
+    if (path.endsWith('/author/submission-drafts/requirements')) return jsonResponse({keywords_required:true,cover_letter_required:false,corresponding_author_required:['first_name','last_name','email','institution','country'],coauthor_required:['first_name','last_name','institution','country']});
+    if (path.endsWith('/author/submission-drafts') && method === 'GET') return jsonResponse(guidedDraft ? [guidedDraft] : []);
+    if (path.endsWith('/author/submission-drafts') && method === 'POST') {guidedDraft={id:'guided',revision:0,current_step:1,payload:{}};return jsonResponse(guidedDraft,201);}
+    if (path.endsWith('/author/submission-drafts/guided') && method === 'PUT') {const data=JSON.parse(request.body);guidedDraft={...guidedDraft,revision:guidedDraft.revision+1,current_step:data.current_step,payload:data.payload};return jsonResponse(guidedDraft);}
+    if (path.endsWith('/author/submission-drafts/guided/link') && method === 'POST') {manuscript ||= makeManuscript({title:guidedDraft.payload.title,abstract:guidedDraft.payload.abstract});return jsonResponse({manuscript_id:101});}
+    if (path.endsWith('/author/submission-drafts/guided/attachments') && method === 'GET') return jsonResponse([]);
+    if (path.includes('/manuscripts/101/upload-requests/') && method === 'GET') return uploadReceipt ? jsonResponse(uploadReceipt) : jsonResponse({detail:'Not found'},404);
+    if (path.endsWith('/manuscripts/101/upload-recovery') && method === 'GET') return jsonResponse({available:true});
 
     // Load the author's manuscript list.
     if (path.endsWith("/manuscripts/my")) {
@@ -95,6 +111,8 @@ function setupFetch(initialManuscript = null, options = {}) {
       method === "POST"
     ) {
       const uploadedFile = request.body.get("file");
+      const requestId = request.body.get('request_id');
+      if (requestId) uploadReceipt = {request_id:requestId, manuscript_id:101, original_filename:uploadedFile.name, size:uploadedFile.size, sha256:JSON.parse(window.localStorage.getItem('gsub:pending-manuscript-upload:guided:101')).sha256, is_current:true};
 
       manuscript = {
         ...manuscript,
@@ -190,7 +208,7 @@ async function resumeDraft(manuscript) {
 
   // Step 3: Continue submission from the details page.
   const continueButton = await screen.findByRole("button", {
-    name: "Continue Submission",
+    name: "Continue Process",
   });
 
   fireEvent.click(continueButton);
@@ -215,8 +233,10 @@ describe("AuthorDashboard - Submission Wizard Integration", () => {
     const wizard = await resumeDraft(manuscript);
 
     expect(
-      wizard.getByText("Step 3 of 3")
+      wizard.getByText("Step 2 of 3")
     ).toBeTruthy();
+
+    fireEvent.click(wizard.getByRole("button", {name: "Continue to Review"}));
 
     expect(
       wizard.getByRole("heading", {
@@ -322,110 +342,22 @@ describe("AuthorDashboard - Submission Wizard Integration", () => {
   );
 
   it("completes the entire new manuscript submission workflow", async () => {
-    const { fetchMock, getManuscript } =
-      setupFetch();
-
-    renderDashboard();
-
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "+ New Submission",
-      })
-    );
-
-    const wizard = getWizard();
-
-    fireEvent.change(
-      wizard.getByLabelText(/Manuscript Title/),
-      {
-        target: {
-          value: "New Synthetic Paper",
-        },
-      }
-    );
-
-    fireEvent.change(
-      wizard.getByLabelText(/Abstract/),
-      {
-        target: {
-          value: "New synthetic abstract.",
-        },
-      }
-    );
-
-    fireEvent.click(
-      wizard.getByRole("button", {
-        name: /Save & Continue/,
-      })
-    );
-
-    await waitFor(() => {
-      expect(
-        wizard.getByText("Step 2 of 3")
-      ).toBeTruthy();
-    });
-
-    expect(getManuscript().title).toBe(
-      "New Synthetic Paper"
-    );
-
-    const file = new File(
-      ["New manuscript"],
-      "new-paper.pdf"
-    );
-
-    fireEvent.change(
-      wizard.getByLabelText(/Select Manuscript File/),
-      {
-        target: { files: [file] },
-      }
-    );
-
-    fireEvent.click(
-      wizard.getByRole("button", {
-        name: "Upload File",
-      })
-    );
-
-    await waitFor(() => {
-      expect(
-        wizard.getByRole("heading", {
-          name: "Review Your Submission",
-        })
-      ).toBeTruthy();
-    });
-
-    fireEvent.click(
-      wizard.getByRole("button", {
-        name: "Submit Manuscript",
-      })
-    );
-
-    expect(
-      await screen.findByText(
-        "Manuscript Submitted Successfully!"
-      )
-    ).toBeTruthy();
-
-    expect(getManuscript().status).toBe("submitted");
-
-    const requests = fetchMock.mock.calls;
-
-    expect(
-      requests.some(
-        ([url, request]) =>
-          String(url).endsWith("/manuscripts/") &&
-          request.method === "POST"
-      )
-    ).toBe(true);
-
-    expect(
-      requests.some(
-        ([url, request]) =>
-          String(url).includes("/manuscripts/101/submit") &&
-          request.method === "POST"
-      )
-    ).toBe(true);
+    const {fetchMock,getManuscript}=setupFetch();renderDashboard();
+    fireEvent.click(screen.getByRole('button',{name:'+ New Submission'}));
+    const wizard=getWizard();
+    await waitFor(()=>expect(wizard.getByRole('button',{name:'Start'}).disabled).toBe(false));
+    fireEvent.click(wizard.getByRole('button',{name:'Start'}));await wizard.findByText(/Step 2 of 10/);
+    fireEvent.change(wizard.getByLabelText(/Submission type/),{target:{value:'Review Article'}});fireEvent.click(wizard.getByRole('button',{name:'Next'}));await wizard.findByText(/Step 3 of 10/);
+    fireEvent.change(wizard.getByLabelText(/Document title/),{target:{value:'New Synthetic Paper'}});fireEvent.click(wizard.getByRole('button',{name:'Next'}));await wizard.findByText(/Step 4 of 10/);
+    fireEvent.change(wizard.getByLabelText(/^Abstract/),{target:{value:'New synthetic abstract.'}});fireEvent.click(wizard.getByRole('button',{name:'Next'}));await wizard.findByText(/Step 5 of 10/);
+    await waitFor(()=>expect(getManuscript()?.title).toBe('New Synthetic Paper'));
+    fireEvent.change(wizard.getByLabelText('Select manuscript file'),{target:{files:[new File(['New manuscript'],'new-paper.pdf')]}});fireEvent.click(wizard.getByRole('button',{name:'Upload manuscript'}));await wizard.findByText(/Current file:/);
+    fireEvent.click(wizard.getByRole('button',{name:'Next'}));await wizard.findByText(/Step 6 of 10/);fireEvent.change(wizard.getByLabelText('Keyword'),{target:{value:'research'}});fireEvent.click(wizard.getByRole('button',{name:'Add keyword'}));fireEvent.click(wizard.getByRole('button',{name:'Next'}));await wizard.findByText(/Step 7 of 10/);
+    const author=wizard.getByRole('group',{name:'Corresponding author'});for(const [label,value] of [['First name','Synthetic'],['Last name','Author'],['Email','author@example.com'],['Institution','University'],['Country','Country']])fireEvent.change(within(author).getByLabelText(new RegExp(`^${label}`)),{target:{value}});
+    fireEvent.click(wizard.getByRole('button',{name:'Next'}));await wizard.findByText(/Step 8 of 10/);fireEvent.change(wizard.getByLabelText(/Corresponding author position/),{target:{value:'0'}});fireEvent.click(wizard.getByRole('button',{name:'Next'}));await wizard.findByText(/Step 9 of 10/);fireEvent.click(wizard.getByRole('button',{name:'Next'}));await wizard.findByText(/Step 10 of 10/);fireEvent.click(wizard.getByRole('button',{name:'Next'}));await wizard.findByRole('heading',{name:'Review and submit'});
+    fireEvent.click(wizard.getByRole('button',{name:'Submit manuscript'}));expect(await screen.findByRole('heading',{name:'Submission successful'})).toBeTruthy();expect(getManuscript().status).toBe('submitted');
+    expect(fetchMock.mock.calls.some(([url,request])=>String(url).endsWith('/author/submission-drafts')&&request.method==='POST')).toBe(true);
+    expect(fetchMock.mock.calls.some(([url,request])=>String(url).includes('/manuscripts/101/submit')&&request.method==='POST'&&request.headers['X-Expected-Submission-Revision'])).toBe(true);
   });
 
   it("allows retry after a failed submission", async () => {
@@ -442,6 +374,7 @@ describe("AuthorDashboard - Submission Wizard Integration", () => {
     renderDashboard();
 
     const wizard = await resumeDraft(manuscript);
+    fireEvent.click(wizard.getByRole("button", {name: "Continue to Review"}));
 
     fireEvent.click(
       wizard.getByRole("button", {
@@ -490,10 +423,16 @@ it('keeps a dirty wizard on cancelled sidebar navigation and discards it only on
   render(<AuthorDashboard user={{name:'Synthetic Author'}} token="synthetic-token" registerManuscriptReturn={register} />);
   fireEvent.click(screen.getByRole('button', {name:'+ New Submission'}));
   expect(screen.queryByRole('button', {name:'+ New Submission'})).toBeNull();
-  fireEvent.change(getWizard().getByLabelText(/Manuscript Title/), {target:{value:'Unfinished work'}});
+  await waitFor(()=>expect(getWizard().getByRole('button',{name:'Start'}).disabled).toBe(false));
+  fireEvent.click(getWizard().getByRole('button',{name:'Start'}));
+  await getWizard().findByText(/Step 2 of 10/);
+  fireEvent.change(getWizard().getByLabelText(/Submission type/),{target:{value:'Review Article'}});
+  fireEvent.click(getWizard().getByRole('button',{name:'Next'}));
+  await getWizard().findByText(/Step 3 of 10/);
+  fireEvent.change(getWizard().getByLabelText(/Document title/), {target:{value:'Unfinished work'}});
   await waitFor(() => expect(goBack).toBeTypeOf('function'));
   expect(goBack()).toBe(false);
-  expect(getWizard().getByLabelText(/Manuscript Title/).value).toBe('Unfinished work');
-  fireEvent.click(getWizard().getByRole('button',{name:'Close submission wizard'}));
+  expect(getWizard().getByLabelText(/Document title/).value).toBe('Unfinished work');
+  fireEvent.click(getWizard().getByRole('button',{name:'Exit without saving'}));
   expect(document.querySelector('.submission-wizard')).toBeNull();
 });

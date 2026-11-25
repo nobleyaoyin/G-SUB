@@ -3,14 +3,19 @@ import { API_URL } from "./api";
 import "./ReviewerProfilePanel.css";
 import useReturnRefresh from "./useReturnRefresh";
 
-const empty = { professional_title: "", institution: "", department: "", research_areas: "", expertise: "" };
+const empty = { full_name: "", professional_title: "", institution: "", department: "", research_areas: "", expertise: "" };
 const fields = [["professional_title", "Professional Title", 100], ["institution", "Institution / Affiliation", 200], ["department", "Department", 150]];
 const lists = [["research_areas", "Research Areas"], ["expertise", "Expertise Keywords"]];
-const fromProfile = profile => ({ professional_title: profile?.professional_title || "", institution: profile?.institution || "", department: profile?.department || "", research_areas: (profile?.research_areas || []).join("\n"), expertise: (profile?.expertise || []).join("\n") });
+const fromProfile = (profile, account) => ({ full_name: account?.name || "", professional_title: profile?.professional_title || "", institution: profile?.institution || "", department: profile?.department || "", research_areas: (profile?.research_areas || []).join("\n"), expertise: (profile?.expertise || []).join("\n") });
 const hasControls = value => /\p{C}/u.test(value);
 
-function validate(form) {
+function validate(form, account) {
   const result = {};
+  if (account) {
+    const name = form.full_name.trim();
+    if (!name || Array.from(form.full_name).length > 100 || hasControls(name)) throw new Error('Full name is required, with at most 100 characters and no control characters.');
+    result.full_name = name;
+  }
   for (const [key, label, limit] of fields) {
     const raw = form[key]; const value = raw.trim();
     if (Array.from(raw).length > limit || (value && hasControls(value))) throw new Error(`${label} must contain at most ${limit} characters and no control characters.`);
@@ -26,6 +31,7 @@ function validate(form) {
 
 export default function ReviewerProfilePanel({ token, onDirtyChange }) {
   const [form, setForm] = useState(empty);
+  const [account, setAccount] = useState(null);
   const [saved, setSaved] = useState(empty);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -45,7 +51,7 @@ export default function ReviewerProfilePanel({ token, onDirtyChange }) {
       if (!response.ok) throw new Error(response.status === 503 ? "Professional profile is currently unavailable. Try again later." : "Could not load your professional profile.");
       const data = await response.json();
       if (signal?.aborted) return;
-      const value = fromProfile(data.profile);
+      const value = fromProfile(data.profile, data.account); setAccount(data.account || null);
       setForm(value); setSaved(value); onDirtyChange(false); setAvailable(true); setUncertain(false);
     } catch (err) {
       if (!signal?.aborted) { setAvailable(false); setError(err.message || "Could not load your professional profile."); }
@@ -67,7 +73,7 @@ export default function ReviewerProfilePanel({ token, onDirtyChange }) {
   const submit = async event => {
     event.preventDefault(); if (busy || uncertain) return;
     let payload;
-    try { payload = validate(form); } catch (err) { setError(err.message); return; }
+    try { payload = validate(form, account); } catch (err) { setError(err.message); return; }
     setBusy(true); setError(""); setMessage("");
     try {
       let response;
@@ -80,17 +86,18 @@ export default function ReviewerProfilePanel({ token, onDirtyChange }) {
       let data;
       try { data = await response.json(); } catch { setUncertain(true); throw new Error("Profile was saved, but the response could not be read. Close and reopen the profile before making further changes."); }
       if (!data?.profile) { setUncertain(true); throw new Error("Profile was saved, but the response was incomplete. Close and reopen the profile before making further changes."); }
-      const value = fromProfile(data.profile); setForm(value); setSaved(value); onDirtyChange(false); setMessage("Professional profile saved.");
+      const nextAccount = data.account || account; const value = fromProfile(data.profile, nextAccount); setAccount(nextAccount); setForm(value); setSaved(value); onDirtyChange(false); setMessage("Professional profile saved.");
     } catch (err) {
       setError(err.message || "Save outcome could not be confirmed. Close and reopen the profile to check before retrying.");
     } finally { setBusy(false); }
   };
 
-  return <section className="reviewer-profile-panel" aria-label="My Professional Profile">
-    <h2>My Professional Profile</h2><p>Information is self-reported and is not institutionally verified.</p>
+  return <section className="reviewer-profile-panel" aria-label="My professional profile">
+    <h2>My professional profile</h2><p>Information is self-reported and is not institutionally verified.</p>
     {loading && <p role="status">Loading profile…</p>}{error && <p role="alert">{error}</p>}{message && <p role="status">{message}</p>}
     {!loading && !available && <p>Return to this view to try loading again.</p>}
     {!loading && available && <form onSubmit={submit} noValidate>
+      {account && <><label>Full Name<input value={form.full_name} onChange={e => change('full_name', e.target.value)} disabled={busy} required /></label><p>Email: {account.email || 'Unavailable'} (account sign-in email)</p><p>Email changes require a verified account change process.</p></>}
       {fields.map(([key, label, limit]) => <label key={key}>{label}<input value={form[key]} onChange={e => change(key, e.target.value)} disabled={busy} aria-describedby={`${key}-help`} /><small id={`${key}-help`}>Optional; up to {limit} characters.</small></label>)}
       {lists.map(([key, label]) => <label key={key}>{label}<textarea value={form[key]} onChange={e => change(key, e.target.value)} disabled={busy} rows={3} aria-describedby={`${key}-help`} /><small id={`${key}-help`}>One entry per line; up to 12 entries, 80 characters each.</small></label>)}
       <div className="reviewer-profile-actions"><button type="submit" disabled={busy || uncertain}>Save profile</button><button type="button" disabled={busy || !dirty} onClick={reset}>Discard changes</button></div>

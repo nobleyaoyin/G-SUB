@@ -5,6 +5,7 @@ using that project's own virtual environment, or as part of its pytest suite.
 """
 import json
 import os
+import secrets
 from pathlib import Path
 import subprocess
 import sys
@@ -29,6 +30,15 @@ def worker():
         root = Path(temp).resolve()
         config.DATA_ROOT = root
         config.PROJECT_ROOT = root
+        # The collaboration engine validates this path at import time. Create
+        # a new private disposable placeholder before importing it; the test
+        # still overrides the request database with its separate synthetic DB.
+        data_dir = root / '.test-data'
+        data_dir.mkdir(mode=0o700)
+        configured_db = data_dir / 'configured.sqlite'
+        descriptor = os.open(configured_db, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(descriptor)
+        os.environ['COLLABORATION_DATABASE'] = str(configured_db)
         from app.database import Base, get_db
         from app import models
         from app.security import SECRET_KEY, hash_password
@@ -112,7 +122,7 @@ class IsolatedBackendSmoke(unittest.TestCase):
     def setUpClass(cls):
         env = {'PATH': os.environ.get('PATH', ''), 'PYTHONPATH': str(PROJECT),
                'PYTHON_DOTENV_DISABLED': '1', 'PYTHONDONTWRITEBYTECODE': '1',
-               'SECRET_KEY': 'synthetic-only-smoke-test-key', 'MANUSCRIPT_MODE': 'development',
+               'SECRET_KEY': secrets.token_hex(32), 'MANUSCRIPT_MODE': 'development',
                'GSUB_CAPTCHA_MODE': 'off'}
         if os.environ.get('TMPDIR'):
             env['TMPDIR'] = os.environ['TMPDIR']

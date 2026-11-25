@@ -25,7 +25,8 @@ class ReviewerProgressTests(unittest.TestCase):
         data=response.json();self.assertEqual(response.headers['cache-control'],'no-store');self.assertNotIn('title',data)
         for text in ('author_id','author_name','reviewer_id','email','abstract','file_path','Synthetic'):
             self.assertNotIn(text,str(data))
-        self.assertEqual(len(data['stages']),9)
+        self.assertEqual(len(data['stages']),10)
+        self.assertEqual([s['name'] for s in data['stages']][-3:], ['Formatting', 'Proofing', 'Publication'])
         for actor in (1,3,5):
             result=self.get(actor);self.assertEqual(result.status_code,200,result.text)
             self.assertNotIn('reviewer_id',str(result.json()))

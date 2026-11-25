@@ -13,7 +13,7 @@ const okPdf = () => ({ ok: true, headers: pdfHeaders, blob: async () => new Blob
 const defer = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const items = [1, 2].map(id => ({ assignment_id: id, manuscript_id: id, review_round: 1, status: 'assigned', invitation_status: 'accepted', review_file_available: true }));
 const open = async id => fireEvent.click(within((await screen.findByRole('heading', { name: `Manuscript #${id}` })).closest('.reviewer-card')).getByRole('button', { name: 'Open manuscript' }));
-const back = () => fireEvent.click(screen.getByRole('button', { name: 'Back to Manuscripts' }));
+const back = () => fireEvent.click(screen.getByRole('button', { name: 'Back to manuscripts' }));
 
 it.each([undefined, null, 0, -1, 1.5, NaN, '1', true, Number.MAX_SAFE_INTEGER + 1])('fails closed for invalid reviewer ID %s', id => {
   const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);

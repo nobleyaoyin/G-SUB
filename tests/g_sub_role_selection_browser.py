@@ -46,7 +46,7 @@ def main():
                         if path == '/users/login':
                             payload = json.loads(req.post_data)
                             assert set(payload) == {'email', 'password', 'captcha_token'}
-                            if payload['password'] == 'wrong':
+                            if payload['password'] == 'synthetic-phase4-mocked-value':
                                 route.fulfill(status=401, content_type='application/json', body=json.dumps({'detail': 'Invalid email or password'}))
                                 return
                             body = {'access_token': 'synthetic-token', 'token_type': 'bearer'}
@@ -94,7 +94,7 @@ def main():
                     page.keyboard.press('Enter')
                     expect(page.get_by_text('Selected role: Editor-in-Chief')).to_be_visible()
                     page.get_by_label('Email Address').fill('test@example.invalid')
-                    page.get_by_label('Password').fill('wrong')
+                    page.get_by_label('Password').fill('synthetic-phase4-mocked-value')
                     page.get_by_role('button', name='Sign In').click()
                     expect(page.get_by_role('alert')).to_contain_text('Invalid email or password')
                     page.get_by_label('Password').fill('synthetic-password')

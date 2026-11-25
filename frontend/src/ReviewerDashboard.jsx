@@ -1,4 +1,14 @@
-import { ReviewerDocumentUpload } from "./DocumentDistribution";
+import {displayError} from './displayError';
+import './ManuscriptsListLayout.css';
+import {workflowStatusLabel} from './workflowStatus';
+import useStageProjection, {StageProjectionNotice} from './useStageProjection';
+import CollapsibleStatistics from './CollapsibleStatistics';
+import ReviewerManuscriptCard from './ReviewerManuscriptCard';
+import RoleListControls, { selectRoleItems } from "./RoleListControls";
+import RoleOverview from "./RoleOverview";
+import AuthorNotificationCenter from "./AuthorNotificationCenter";
+import ManuscriptTimeline from "./ManuscriptTimeline";
+import { ReviewerDocumentUpload, ReviewerDocumentHistory } from "./DocumentDistribution";
 import useManuscriptReturn from "./useManuscriptReturn";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import "./ReviewerDashboard.css";
@@ -6,12 +16,16 @@ import NotificationBell from "./NotificationBell";
 import ReviewerProfilePanel from "./ReviewerProfilePanel";
 import useReturnRefresh from "./useReturnRefresh";
 import ManuscriptProgress from "./ManuscriptProgress";
-import { reviewerPrompt } from "./participantPrompts";
 import { PRODUCT_DISPLAY_NAME, PRODUCT_SYSTEM_NAME } from "./branding";
 
 import { API_URL } from "./api";
 
-function ReviewerWorkspace({ user, token, onProfileDirtyChange, registerManuscriptReturn }) {
+function ReviewerWorkspace({ user, token, accountControl, onProfileDirtyChange, registerManuscriptReturn, section, onSectionChange }) {
+  const [listSearch, setListSearch] = useState("");
+  const [listStatus, setListStatus] = useState("");
+  const [listSort, setListSort] = useState("recent");
+  const [notificationSnapshot, setNotificationSnapshot] = useState(null);
+  const receiveNotifications = useCallback(snapshot => setNotificationSnapshot(snapshot), []);
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileDirty, setProfileDirty] = useState(false);
   const profileDirtyChanged = useCallback(value => { setProfileDirty(value); onProfileDirtyChange?.(value); }, [onProfileDirtyChange]);
@@ -34,6 +48,51 @@ function ReviewerWorkspace({ user, token, onProfileDirtyChange, registerManuscri
   const [reviews, setReviews] = useState({});
   const [details, setDetails] = useState({});
   const [progressRevision, setProgressRevision] = useState(0);
+  const [documentRevision, setDocumentRevision] = useState(0);
+  const [taskResult, setTaskResult] = useState(null);
+  const [ownReview, setOwnReview] = useState(null);
+
+  useEffect(() => {
+    const assignment = assignments.find(item => item.assignment_id === selectedId);
+    setOwnReview(null);
+    if (!assignment || assignment.status !== 'completed' || !Number.isSafeInteger(assignment.manuscript_id) || !Number.isSafeInteger(assignment.review_round)) return undefined;
+    const controller = new AbortController();
+    const context = { token, assignmentId: selectedId, manuscriptId: assignment.manuscript_id, round: assignment.review_round };
+    setOwnReview({ ...context, loading: true });
+    fetch(`${API_URL}/reviews/my/manuscripts/${context.manuscriptId}/rounds/${context.round}/assignments/${context.assignmentId}`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: controller.signal, cache: 'no-store',
+    }).then(async response => {
+      if (!response.ok) throw new Error('Review unavailable');
+      const data = await response.json();
+      if (data.assignment_id !== context.assignmentId || data.manuscript_id !== context.manuscriptId || data.review_round !== context.round ||
+          typeof data.comments !== 'string' || typeof data.recommendation !== 'string' || typeof data.submitted_at !== 'string') throw new Error('Invalid review');
+      if (!controller.signal.aborted) setOwnReview({ ...context, data });
+    }).catch(() => { if (!controller.signal.aborted) setOwnReview({ ...context, error: true }); });
+    return () => controller.abort();
+  }, [assignments, selectedId, token, progressRevision]);
+
+  useEffect(() => {
+    if (selectedId == null) return undefined;
+    const controller = new AbortController();
+    const context = { token, id: selectedId, revision: progressRevision };
+    setTaskResult(null);
+    async function loadTask() {
+      try {
+        const response = await fetch(`${API_URL}/assignments/${selectedId}/task`, {
+          headers: { Authorization: `Bearer ${token}` }, signal: controller.signal, cache: 'no-store',
+        });
+        if (!response.ok) throw new Error('Task unavailable');
+        const data = await response.json();
+        if (!['pending','declined','waiting','stale','unavailable','no_action','action_required'].includes(data?.task_state) ||
+            data.relevant_stage !== 'Peer Review' || typeof data.task_message !== 'string' || !data.task_message.trim()) throw new Error('Invalid task');
+        if (!controller.signal.aborted) setTaskResult({ ...context, task: data });
+      } catch {
+        if (!controller.signal.aborted) setTaskResult({ ...context, task: { task_state:'unavailable', task_message:'Assignment task information is unavailable.' } });
+      }
+    }
+    loadTask();
+    return () => controller.abort();
+  }, [selectedId, token, progressRevision]);
 
   const [loading, setLoading] = useState(true);
   const [submittingId, setSubmittingId] = useState(null);
@@ -198,6 +257,8 @@ function ReviewerWorkspace({ user, token, onProfileDirtyChange, registerManuscri
       return;
     }
 
+    const version = selectionVersion.current;
+    const isCurrent = () => workspaceMounted.current && activeToken.current === token && activeSelection.current === assignmentId && selectionVersion.current === version;
     submittingRef.current = true;
     setSubmittingId(assignmentId);
 
@@ -219,6 +280,7 @@ function ReviewerWorkspace({ user, token, onProfileDirtyChange, registerManuscri
       });
 
       await readResponse(response, "Review submission failed");
+      if (!isCurrent()) return;
 
       // Clear the submitted review form
       setReviews((previous) => {
@@ -228,7 +290,8 @@ function ReviewerWorkspace({ user, token, onProfileDirtyChange, registerManuscri
       });
 
       // Reload assignments to show the completed status
-      const refreshed = await loadAssignments();
+      const refreshed = await loadAssignments(isCurrent);
+      if (!isCurrent()) return;
 
       if (refreshed) {
         setMessage(
@@ -240,7 +303,7 @@ function ReviewerWorkspace({ user, token, onProfileDirtyChange, registerManuscri
         );
       }
     } catch (err) {
-      setError(err.message || "Review submission failed.");
+      if (isCurrent()) setError(err.message || "Review submission failed.");
     } finally {
       submittingRef.current = false;
       setSubmittingId(null);
@@ -364,24 +427,32 @@ function ReviewerWorkspace({ user, token, onProfileDirtyChange, registerManuscri
     if (id === null) return;
     setReviews(previous => { const next = { ...previous }; delete next[id]; return next; });
   };
-  useManuscriptReturn(registerManuscriptReturn, () => {
+  const returnToManuscripts = () => {
     const review = reviews[selectedId] || {};
+    if (profileDirty && !window.confirm("Discard unsaved profile changes?")) return false;
     if ((review.comments || review.recommendation) && !window.confirm('Leave this review and discard unsaved changes?')) return false;
     discardReview(selectedId);
     setSelectedId(null);
+    if (profileDirty) profileDirtyChanged(false);
+    setProfileOpen(false);
     return true;
-  });
+  };
+  useManuscriptReturn(registerManuscriptReturn, returnToManuscripts);
 
   const handleNotificationNavigate = (notification) => {
     const manuscriptId = notification.manuscript_id;
     const target = assignments.filter(item => item.manuscript_id === manuscriptId)
       .sort((a, b) => b.review_round - a.review_round)[0];
     if (!target) return;
+    if (profileDirty && !window.confirm("Discard unsaved profile changes?")) return;
     const current = reviews[selectedId] || {};
     if (selectedId !== null && selectedId !== target.assignment_id && (current.comments || current.recommendation) && !window.confirm('Leave this review and discard unsaved changes?')) return;
     if (selectedId !== target.assignment_id) discardReview(selectedId);
-    setSelectedId(target.assignment_id);
+    if (profileDirty) profileDirtyChanged(false); setProfileOpen(false);
+    setSelectedId(target.assignment_id); onSectionChange?.("manuscripts");
   };
+
+  const stageProjection = useStageProjection(assignments, token, listStatus, true);
 
   return (
     <div className="reviewer-page">
@@ -402,50 +473,59 @@ function ReviewerWorkspace({ user, token, onProfileDirtyChange, registerManuscri
           <NotificationBell
              token={token}
              onNavigate={handleNotificationNavigate}
+             onViewAll={onSectionChange ? () => { if (returnToManuscripts() !== false) onSectionChange("notifications"); } : undefined}
+             onAuthorSnapshot={onSectionChange ? receiveNotifications : undefined}
           />
+          {accountControl}
 
 
         </div>
 
       </header>
 
-      <main className="reviewer-main">
+      <main className={`reviewer-main${section === 'dashboard' || section === 'manuscripts' ? ' reviewer-main-list-layout' : ''}`}>
+        {section === 'dashboard' && <RoleOverview label="Reviewer" items={assignments} loading={loading} error={displayError(error)} onNavigate={onSectionChange} onOpen={item => handleNotificationNavigate(item)} />}
+        {section === 'notifications' && <AuthorNotificationCenter snapshot={notificationSnapshot} token={token} onOpen={handleNotificationNavigate} onBack={() => onSectionChange('dashboard')} />}
+        <div className={section === 'manuscripts' ? 'manuscripts-list-layout reviewer-list-layout' : undefined} hidden={Boolean(section && section !== 'manuscripts')}>
+        <aside className={section === 'manuscripts' ? 'manuscripts-list-sidebar author-statistics-sidebar' : undefined} aria-label="Manuscript statistics">
+        <CollapsibleStatistics className={section === 'manuscripts' && selectedId === null ? 'dashboard-collapsible' : 'reviewer-collapsible reviewer-stats-collapsible'}>
+          {error ? <p>Statistics are unavailable.</p> : loading ? <p role="status">Loading statistics…</p> : <div className={section === 'manuscripts' && selectedId === null ? 'stats-grid' : 'reviewer-stats'}>
+          <div className={section === 'manuscripts' && selectedId === null ? 'stat-card' : 'reviewer-stat-card'}>
+            <span>Total assignments</span>
+            <strong>{assignments.length}</strong>
+          </div>
+
+          <div className={section === 'manuscripts' && selectedId === null ? 'stat-card' : 'reviewer-stat-card'}>
+            <span>Completed</span>
+            <strong>{completedCount}</strong>
+          </div>
+
+          <div className={section === 'manuscripts' && selectedId === null ? 'stat-card' : 'reviewer-stat-card'}>
+            <span>Pending</span>
+            <strong>{pendingCount}</strong>
+          </div>
+          </div>}
+        </CollapsibleStatistics>
+        </aside>
+        <div className={section === 'manuscripts' ? 'manuscripts-list-content' : undefined}>
         <h2>Welcome, {user.name}!</h2>
 
         <p className="reviewer-description">
           Review assigned manuscripts and submit your recommendations.
         </p>
 
-        <div hidden={selectedId !== null}><button type="button" className="reviewer-download" aria-expanded={profileOpen} aria-controls="reviewer-profile-section" onClick={() => {
+        <div hidden={selectedId !== null}><button type="button" className="download-button reviewer-profile-button" aria-expanded={profileOpen} aria-controls="reviewer-profile-section" onClick={() => {
           if (profileOpen && profileDirty && !window.confirm("Discard unsaved profile changes?")) return;
           if (profileOpen) profileDirtyChanged(false);
           setProfileOpen(value => !value);
-        }}>My Professional Profile</button>
-        <div id="reviewer-profile-section">{profileOpen && <ReviewerProfilePanel token={token} onDirtyChange={profileDirtyChanged} />}</div>
+        }}>My professional profile</button>
+        <div id="reviewer-profile-section">{profileOpen && <ReviewerProfilePanel token={token} onDirtyChange={profileDirtyChanged} />}</div></div>
 
-        <details className="reviewer-collapsible reviewer-stats-collapsible">
-          <summary>Statistics</summary>
-          <div className="reviewer-stats">
-          <div className="reviewer-stat-card">
-            <span>Total Assignments</span>
-            <strong>{assignments.length}</strong>
-          </div>
 
-          <div className="reviewer-stat-card">
-            <span>Completed</span>
-            <strong>{completedCount}</strong>
-          </div>
-
-          <div className="reviewer-stat-card">
-            <span>Pending</span>
-            <strong>{pendingCount}</strong>
-          </div>
-          </div>
-        </details></div>
 
         {error && (
           <div className="reviewer-error" role="alert">
-            {error}
+            {displayError(error)}
           </div>
         )}
 
@@ -461,30 +541,30 @@ function ReviewerWorkspace({ user, token, onProfileDirtyChange, registerManuscri
 
           </div>
 
+          {section === "manuscripts" && selectedId === null && <StageProjectionNotice projection={stageProjection} />}
+          {section === "manuscripts" && selectedId === null && <RoleListControls projection={stageProjection} items={stageProjection.items} search={listSearch} setSearch={setListSearch} status={listStatus} setStatus={setListStatus} sort={listSort} setSort={setListSort} />}
+          {section === "manuscripts" && assignments.length > 0 && (listSearch || listStatus) && !stageProjection.loading && !stageProjection.unavailable && selectRoleItems(stageProjection.items, listSearch, listStatus, listSort).length === 0 && <p>No manuscripts match the current filters.</p>}
           {loading ? (
             <p>Loading assignments...</p>
           ) : assignments.length === 0 ? (
             <p>No review assignments found.</p>
           ) : (
             <div className="reviewer-list">
-              {assignments.filter(assignment => selectedId === null || assignment.assignment_id === selectedId).map((assignment) => {
+              {(selectedId === null && section === "manuscripts" ? selectRoleItems(stageProjection.items, listSearch, listStatus, listSort) : assignments.filter(assignment => selectedId === null || assignment.assignment_id === selectedId)).map((assignment) => {
                 const assignmentId = assignment.assignment_id;
                 const review = reviews[assignmentId] || {};
 
                 const isCompleted =
                   assignment.status === "completed";
 
+                const taskIsStale = taskResult?.token === token && taskResult?.id === assignmentId && taskResult?.revision === progressRevision && taskResult?.task?.task_state === 'stale';
                 const isAssigned =
-                  assignment.status === "assigned" && ["accepted", "legacy"].includes(assignment.invitation_status);
+                  !taskIsStale && assignment.status === "assigned" && ["accepted", "legacy"].includes(assignment.invitation_status);
 
-                const invitationPending = assignment.invitation_status === "pending";
+                const invitationPending = !taskIsStale && assignment.invitation_status === "pending";
                 const invitationDeclined = assignment.invitation_status === "declined";
 
-                if (selectedId === null) return <div id={`assignment-${assignmentId}`} className="reviewer-card" key={assignmentId} data-manuscript-id={assignment.manuscript_id}>
-                  <h3>{assignment.manuscript_title || `Manuscript #${assignment.manuscript_id}`}</h3>
-                  <p>Manuscript #{assignment.manuscript_id} · Round {assignment.review_round} · {assignment.invitation_status}{assignment.manuscript_status && ` · ${assignment.manuscript_status.replaceAll('_', ' ')}`}</p>
-                  <button type="button" onClick={() => setSelectedId(assignmentId)}>Open manuscript</button>
-                </div>;
+                if (selectedId === null) return <ReviewerManuscriptCard key={assignmentId} assignment={assignment} onOpen={() => setSelectedId(assignmentId)} />;
 
                 const isSubmitting =
                   submittingId === assignmentId;
@@ -500,7 +580,7 @@ function ReviewerWorkspace({ user, token, onProfileDirtyChange, registerManuscri
                     key={assignmentId}
                   >
 
-                    <button type="button" className="manuscript-back" onClick={() => { if ((review.comments || review.recommendation) && !window.confirm('Leave this review and discard unsaved changes?')) return; discardReview(assignmentId); setSelectedId(null); }}>Back to Manuscripts</button>
+                    <button type="button" className="manuscript-back" onClick={() => { if ((review.comments || review.recommendation) && !window.confirm('Leave this review and discard unsaved changes?')) return; discardReview(assignmentId); setSelectedId(null); }}>Back to manuscripts</button>
 
                     <div className="reviewer-card-top">
                       <h3>
@@ -511,39 +591,37 @@ function ReviewerWorkspace({ user, token, onProfileDirtyChange, registerManuscri
                       <span
                         className={`reviewer-status ${assignment.status}`}
                       >
-                        {assignment.status}
+                        {workflowStatusLabel(assignment.status)}
                       </span>
                     </div>
+
+                    {assignment.manuscript_title?.trim() && <p className="reviewer-meta">Manuscript #{assignment.manuscript_id}</p>}
 
                     {['accepted', 'legacy'].includes(assignment.invitation_status) && ['assigned', 'completed'].includes(assignment.status)
                       ? <ManuscriptProgress showTitle={false} showNextAction={false} showRound={!(Number.isInteger(assignment.review_round) && assignment.review_round > 0)} key={`${assignment.manuscript_id}-${progressRevision}`} manuscriptId={assignment.manuscript_id} token={token} />
                       : <p>Progress is available after the invitation is accepted.</p>}
-                    <p className="reviewer-meta"><strong>Next action:</strong> {reviewerPrompt(assignment, Boolean(error))}</p>
+                    {['accepted', 'legacy'].includes(assignment.invitation_status) && ['assigned', 'completed'].includes(assignment.status) && <ManuscriptTimeline manuscriptId={assignment.manuscript_id} token={token} revision={progressRevision} />}
+                    <p className="reviewer-meta"><strong>Next action:</strong> {taskResult?.token === token && taskResult?.id === assignmentId && taskResult?.revision === progressRevision && !error ? <>{taskResult.task.task_message} ({workflowStatusLabel(taskResult.task.task_state)}){isAssigned && taskResult.task.task_state === 'action_required' && taskResult.task.action_label === 'View review form' && taskResult.task.permitted_action_target === `#review-action-${assignmentId}` && <> <a href={taskResult.task.permitted_action_target}>{taskResult.task.action_label}</a></>}</> : 'Assignment task information is unavailable or loading.'}</p>
                     <h4>Manuscript Information</h4>
 
-                    {(assignment.manuscript_title?.trim() || assignment.manuscript_status) && <p className="reviewer-meta">
-                      {assignment.manuscript_title?.trim() && `Manuscript #${assignment.manuscript_id}`}
-                      {assignment.manuscript_status && <>{assignment.manuscript_title?.trim() && ' · '}Status: {assignment.manuscript_status}</>}
-                    </p>}
+                    {assignment.manuscript_status && <p className="reviewer-meta">Status: {workflowStatusLabel(assignment.manuscript_status)}</p>}
 
                     <p className="reviewer-meta">
                       Assignment #{assignmentId}
-                      {" · "}
-                      Review Round {assignment.review_round}
                     </p>
-                    <p className="reviewer-meta">Invitation: {assignment.invitation_status === "legacy" ? "existing assignment" : assignment.invitation_status}</p>
-                    <h4>Review documents · Round {assignment.review_round ?? "unavailable"}</h4>
-                    <p className="reviewer-meta">Incoming manuscript: availability is checked for this assignment. Access does not establish when a document was received.</p>
-                    <p className="reviewer-meta">Reviewed document attachment: unavailable in this assignment summary; the review submission contains comments and a recommendation.</p>
+                    <p className="reviewer-meta">Invitation: {assignment.invitation_status === "legacy" ? "Existing assignment" : workflowStatusLabel(assignment.invitation_status)}</p>
+                    <h4>Review documents{Number.isInteger(assignment.review_round) && assignment.review_round > 0 ? ` · Round ${assignment.review_round}` : !(['accepted', 'legacy'].includes(assignment.invitation_status) && ['assigned', 'completed'].includes(assignment.status)) ? ' · Round unavailable' : ''}</h4>
+                    <p className="reviewer-meta"><strong>Documents received:</strong> availability is checked for this assignment. Access does not establish when a document was received.</p>
+                    <p className="reviewer-meta">Review comments and recommendations are submitted separately from reviewed documents.</p>
                     <h4>Current Stage Actions</h4>
                     {invitationPending && <div><p>Respond to this invitation before accessing the review file.</p><button type="button" disabled={submittingId !== null} onClick={() => respondInvitation(assignmentId, "accept")}>Accept review invitation</button> <button type="button" disabled={submittingId !== null} onClick={() => respondInvitation(assignmentId, "decline")}>Decline review invitation</button></div>}
                     {invitationDeclined && <p>Review invitation declined.</p>}
 
                     {isAssigned && <button type="button" onClick={() => openDetails(assignment)}>View manuscript details</button>}
                     {isAssigned && details[assignmentId] && <div aria-label="Manuscript details">
-                      <p>Manuscript #{details[assignmentId].manuscript_id} · Review round {details[assignmentId].review_round}</p>
                       {details[assignmentId].author_name && <p>Author: {details[assignmentId].author_name}</p>}
                       {details[assignmentId].author_id != null && <p>Author ID: {details[assignmentId].author_id}</p>}
+                      {!details[assignmentId].author_name && details[assignmentId].author_id == null && <p>No additional author information is available.</p>}
                     </div>}
 
                     {assignment.assigned_at && <p className="reviewer-meta">
@@ -570,9 +648,11 @@ function ReviewerWorkspace({ user, token, onProfileDirtyChange, registerManuscri
                       <p className="reviewer-meta">Review file unavailable. Contact the editorial team.</p>
                     )}
 
-                    {isAssigned && <ReviewerDocumentUpload key={assignmentId} token={token} assignmentId={assignmentId} />}
+                    {isAssigned && <ReviewerDocumentUpload key={`upload-${assignmentId}`} token={token} assignmentId={assignmentId} onSaved={()=>setDocumentRevision(value=>value+1)} />}
+                    {assignment.invitation_status === 'accepted' && ['assigned','completed'].includes(assignment.status) && <ReviewerDocumentHistory key={`history-${assignmentId}`} token={token} assignmentId={assignmentId} revision={documentRevision} />}
                     {isAssigned && (
-                      <div className="review-form">
+                      <div className="review-form" id={`review-action-${assignmentId}`}>
+                        <p>Pending review</p>
                         <h4>Submit Review</h4>
 
                         <label htmlFor={`comments-${assignmentId}`}>
@@ -645,9 +725,18 @@ function ReviewerWorkspace({ user, token, onProfileDirtyChange, registerManuscri
                     )}
 
                     {isCompleted && (
-                      <p className="reviewer-completed-message">
-                        Review already submitted.
-                      </p>
+                      <section aria-label="Review History">
+                        <h4>Review History</h4>
+                        <p className="reviewer-completed-message">Review already submitted.</p>
+                        {ownReview?.token === token && ownReview.assignmentId === assignmentId && ownReview.manuscriptId === assignment.manuscript_id && ownReview.round === assignment.review_round ? (
+                          ownReview.loading ? <p role="status">Loading submitted review…</p> : ownReview.error ? <p>Submitted review is unavailable.</p> : ownReview.data && <div>
+                            <h5>Submitted Review · Round {ownReview.round}</h5>
+                            <p><strong>Recommendation:</strong> {ownReview.data.recommendation}</p>
+                            <p><strong>Comments:</strong> {ownReview.data.comments}</p>
+                            <p><strong>Submitted:</strong> {Number.isNaN(Date.parse(ownReview.data.submitted_at)) ? 'Unavailable' : new Date(ownReview.data.submitted_at).toLocaleString()}</p>
+                          </div>
+                        ) : <p role="status">Loading submitted review…</p>}
+                      </section>
                     )}
                   </div>
                 );
@@ -655,6 +744,8 @@ function ReviewerWorkspace({ user, token, onProfileDirtyChange, registerManuscri
             </div>
           )}
         </section>
+        </div>
+        </div>
       </main>
     </div>
   );

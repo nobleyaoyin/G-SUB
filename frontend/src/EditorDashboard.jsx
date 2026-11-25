@@ -1,7 +1,18 @@
+import {displayError} from './displayError';
+import StatusBadge from './StatusBadge';
+import './ManuscriptsListLayout.css';
+import {workflowStatusLabel} from './workflowStatus';
+import EditorAssignmentStatistics from './EditorAssignmentStatistics';
+import {pendingEditorInvitations} from './editorInvitationList';
+import useStageProjection, {StageProjectionNotice} from './useStageProjection';
+import RoleListControls, { selectRoleItems } from "./RoleListControls";
+import RoleOverview from "./RoleOverview";
+import AuthorNotificationCenter from "./AuthorNotificationCenter";
+import ManuscriptTimeline from "./ManuscriptTimeline";
 import { EditorReceivedDocuments } from "./DocumentDistribution";
 import useManuscriptReturn from "./useManuscriptReturn";
 import NotesPanel from "./NotesPanel";
-import MainEditorEmailPanel from "./MainEditorEmailPanel";
+import EmailDemoPanel from "./EmailDemoPanel";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import "./EditorDashboard.css";
@@ -17,9 +28,16 @@ import { PRODUCT_DISPLAY_NAME, PRODUCT_SYSTEM_NAME } from "./branding";
 
 import { API_URL } from "./api";
 
-function EditorDashboard({ user, token, registerManuscriptReturn }) {
+function EditorDashboard({ user, token, accountControl, registerManuscriptReturn, section, onSectionChange }) {
+  const [listSearch, setListSearch] = useState("");
+  const [listStatus, setListStatus] = useState("");
+  const [listSort, setListSort] = useState("recent");
+  const [notificationSnapshot, setNotificationSnapshot] = useState(null);
+  const receiveNotifications = useCallback(snapshot => setNotificationSnapshot(snapshot), []);
   const [manuscripts, setManuscripts] = useState([]);
   const [formattingAssignments, setFormattingAssignments] = useState([]);
+  const [pendingInvitations, setPendingInvitations] = useState([]);
+  const [invitationWarning, setInvitationWarning] = useState(false);
   const [summary, setSummary] = useState(null);
   const [dashboardOwner, setDashboardOwner] = useState(null);
   const dashboardRequest = useRef(0);
@@ -46,6 +64,7 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
   const [reviewHistory, setReviewHistory] = useState({});
   const [historyLoadingId, setHistoryLoadingId] = useState(null);
   const [actionLoadingId, setActionLoadingId] = useState(null);
+  const [progressRevision, setProgressRevision] = useState(0);
 
   const actionLock = useRef(false);
 
@@ -103,10 +122,13 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
     setLoading(true);
 
     try {
-      const [manuscriptsData, summaryData, formattingData] = await Promise.all([
+      const readInvitations = path => apiRequest(path).then(data => Array.isArray(data) ? data : null).catch(() => null);
+      const [manuscriptsData, summaryData, formattingData, initialInvitations, finalInvitations] = await Promise.all([
         apiRequest("/manuscripts/dashboard"),
         apiRequest("/manuscripts/dashboard/summary"),
         apiRequest("/formatting/my"),
+        readInvitations('/eic/initial-editing/my'),
+        readInvitations('/final-workflow/my'),
       ]);
 
       if (!Array.isArray(manuscriptsData)) {
@@ -121,7 +143,10 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
       setDashboardOwner(token);
       setManuscripts(manuscriptsData);
       setFormattingAssignments(formattingData);
+      setPendingInvitations(pendingEditorInvitations(initialInvitations || [], finalInvitations || []));
+      setInvitationWarning(initialInvitations === null || finalInvitations === null);
       setSummary(summaryData);
+      setProgressRevision(value => value + 1);
       // Previously fetched review history may be outdated after refresh.
       setReviewHistory({});
 
@@ -131,6 +156,8 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
       setDashboardOwner(token);
       setManuscripts([]);
       setFormattingAssignments([]);
+      setPendingInvitations([]);
+      setInvitationWarning(false);
       setSummary(null);
       setReviewHistory({});
       setError(err.message || "Failed to load dashboard.");
@@ -157,7 +184,7 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
     (dashboardOwner === token ? formattingAssignments : []).map(item => item.manuscript_id)
   );
 
-  const allManuscripts = [
+  const accessibleManuscripts = [
     ...(dashboardOwner === token ? manuscripts : []).map(item => ({
       ...item,
       formattingAssigned: formattingManuscriptIds.has(item.manuscript_id),
@@ -172,11 +199,21 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
         formattingAssigned: true,
         formattingOnly: true,
       })),
+  ];
+  const accessibleIds = new Set(accessibleManuscripts.map(item => item.manuscript_id));
+  const pendingByManuscript = new Map((dashboardOwner === token ? pendingInvitations : []).map(item => [item.manuscript_id, item]));
+  const allManuscripts = [
+    ...accessibleManuscripts.map(item => item.formattingOnly && pendingByManuscript.has(item.manuscript_id)
+      ? {...item, invitationKinds: pendingByManuscript.get(item.manuscript_id).invitationKinds}
+      : item),
+    ...(dashboardOwner === token ? pendingInvitations : []).filter(item => !accessibleIds.has(item.manuscript_id)),
   ].sort((a, b) => a.manuscript_id - b.manuscript_id);
+
+  const stageProjection = useStageProjection(allManuscripts, token, listStatus);
 
   // Format workflow status
   const formatStatus = (value) =>
-    (value || "").replaceAll("_", " ");
+    workflowStatusLabel(value);
 
   // Determine active review round
   const getActiveRound = (manuscript) =>
@@ -207,11 +244,12 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
   const groupReviewsByRound = (reviews) => {
     const groups = new Map();
     for (const review of reviews) {
-      const round = Number(review.review_round) || 1;
+      const value = Number(review.review_round);
+      const round = Number.isInteger(value) && value > 0 ? value : null;
       if (!groups.has(round)) groups.set(round, []);
       groups.get(round).push(review);
     }
-    return [...groups.entries()].sort(([a], [b]) => a - b);
+    return [...groups.entries()].sort(([a], [b]) => a === null ? 1 : b === null ? -1 : a - b);
   };
 
   // Keep timestamped submissions newest first; preserve input order for unknown dates.
@@ -429,20 +467,20 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
       setActionLoadingId(null);
     }
   };
-  useManuscriptReturn(registerManuscriptReturn, () => {
+  const returnToManuscripts = () => {
     if ((detailDirty || onlineDirty || formattingDirty) && !window.confirm('Leave this manuscript and discard unsaved changes?')) return false;
     historyRequest.current += 1; setHistoryLoadingId(null);
     setDetailDirty(false); setFormattingDirty(false); setOnlineDraftsDirty({}); setExpandedId(null); setError(""); setMessage("");
     return true;
-  });
-
+  };
+  useManuscriptReturn(registerManuscriptReturn, returnToManuscripts);
   const handleNotificationNavigate = (notification) => {
     const manuscriptId = notification.manuscript_id;
     if (!allManuscripts.some(item => item.manuscript_id === manuscriptId)) return;
     if (expandedId === manuscriptId) return;
     if (expandedId !== manuscriptId && (detailDirty || onlineDirty || formattingDirty) && !window.confirm('Leave this manuscript and discard unsaved changes?')) return;
     historyRequest.current += 1; setHistoryLoadingId(null);
-    setDetailDirty(false); setFormattingDirty(false); setOnlineDraftsDirty({}); setExpandedId(manuscriptId);
+    setDetailDirty(false); setFormattingDirty(false); setOnlineDraftsDirty({}); setExpandedId(manuscriptId); onSectionChange?.("manuscripts");
   };
   return (
     <div className="editor-page">
@@ -463,31 +501,26 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
           <NotificationBell
              token={token}
              onNavigate={handleNotificationNavigate}
+             onViewAll={onSectionChange ? () => { if (returnToManuscripts() !== false) onSectionChange("notifications"); } : undefined}
+             onAuthorSnapshot={onSectionChange ? receiveNotifications : undefined}
           />
+          {accountControl}
 
 
         </div>
 
       </header>
 
-      <main className="editor-main">
-        {expandedId === null && <EditorReceivedDocuments token={token} />}
-        {expandedId === null && <>
-          <FinalEditingPanel role="editor" token={token} onChanged={loadDashboard} onOnlineDirtyChange={onOnlineDirtyChange} />
-          <InitialEditingPanel role="editor" token={token} onChanged={loadDashboard} onOnlineDirtyChange={onOnlineDirtyChange} />
-
-        </>}
-        <div className="editor-heading" data-sidebar-target="manuscripts">
-          <div>
-            <h2>Welcome, {user.name}!</h2>
-            <p>Monitor submissions and manage peer reviews.</p>
-          </div>
-
-        </div>
+      <main className={`editor-main${section === "dashboard" ? " editor-overview-layout" : ""}${section === "manuscripts" ? " manuscripts-list-layout" : ""}`}>
+        {section !== 'notifications' && <aside className={section === 'manuscripts' ? 'manuscripts-list-sidebar' : undefined} aria-label="Manuscript statistics"><EditorAssignmentStatistics token={token} userId={user.user_id} revision={progressRevision} summary={safeSummary} statusItems={accessibleManuscripts} statusLoading={loading || dashboardOwner !== token} statusError={displayError(error)} /></aside>}
+        {section === 'dashboard' && <RoleOverview hideStatistics label="Editor" items={allManuscripts} loading={loading} error={displayError(error)} onNavigate={onSectionChange} onOpen={item => handleNotificationNavigate(item)} />}
+        {section === 'notifications' && <AuthorNotificationCenter snapshot={notificationSnapshot} token={token} onOpen={handleNotificationNavigate} onBack={() => onSectionChange('dashboard')} />}
+        <div className={section === 'manuscripts' ? 'manuscripts-list-content' : undefined} hidden={Boolean(section && section !== 'manuscripts')}>
+        <div data-sidebar-target="manuscripts" />
 
         {error && expandedId === null && (
           <div className="editor-error" role="alert">
-            {error}
+            {displayError(error)}
           </div>
         )}
 
@@ -501,39 +534,34 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
           <p>Loading dashboard...</p>
         ) : (
           <>
-            {/* Collapsible dashboard statistics */}
-            {expandedId === null && (
-              <details className="editor-stats-details">
-                <summary>Statistics</summary>
-                <div className="editor-stats">
-                  {[
-                    ["Total Manuscripts", safeSummary?.total_manuscripts],
-                    ["Not Assigned", safeSummary?.not_assigned],
-                    ["In Progress", safeSummary?.in_progress],
-                    ["Ready for Decision", safeSummary?.ready_for_decision],
-                    ["Revision Required", safeSummary?.revision_required],
-                    ["Decision Finalized", safeSummary?.decision_finalized],
-                  ].map(([label, value]) => (
-                    <div className="editor-stat-card" key={label}>
-                      <span>{label}</span>
-                      <strong>{value ?? 0}</strong>
-                    </div>
-                  ))}
-                </div>
-              </details>
-            )}
-
             {/* Manuscript list */}
             <section className={`editor-section${expandedId !== null ? " is-workspace" : ""}`}>
               {expandedId === null && <h2>All Manuscripts</h2>}
+              {expandedId === null && invitationWarning && <p role="status">Some editor invitations could not be loaded. Refresh to check them.</p>}
 
+              {section === "manuscripts" && expandedId === null && <StageProjectionNotice projection={stageProjection} />}
+              {section === "manuscripts" && expandedId === null && <RoleListControls projection={stageProjection} items={stageProjection.items} search={listSearch} setSearch={setListSearch} status={listStatus} setStatus={setListStatus} sort={listSort} setSort={setListSort} />}
+          {section === "manuscripts" && allManuscripts.length > 0 && (listSearch || listStatus) && !stageProjection.loading && !stageProjection.unavailable && selectRoleItems(stageProjection.items, listSearch, listStatus, listSort).length === 0 && <p>No manuscripts match the current filters.</p>}
               {allManuscripts.length === 0 ? (
                 <p>No manuscripts found.</p>
               ) : (
                 <div className="editor-list">
-                  {allManuscripts.filter(manuscript => expandedId === null || manuscript.manuscript_id === expandedId).map((manuscript) => {
+                  {(expandedId === null && section === "manuscripts" ? selectRoleItems(stageProjection.items, listSearch, listStatus, listSort) : allManuscripts.filter(manuscript => expandedId === null || manuscript.manuscript_id === expandedId)).map((manuscript) => {
                     const manuscriptId = manuscript.manuscript_id;
                     const isExpanded = expandedId === manuscriptId;
+
+                    if (manuscript.invitationOnly) {
+                      const refreshAfterInvitation = async () => { if (await loadDashboard()) setExpandedId(null); };
+                      return <div id={`manuscript-${manuscriptId}`} className="editor-card" data-workspace={isExpanded ? 'selected' : undefined} key={manuscriptId}>
+                        <div className="editor-card-top"><h3>{manuscript.title?.trim() || `Manuscript #${manuscriptId}`}</h3><StatusBadge status={manuscript.status} /></div>
+                        {isExpanded ? <>{manuscript.title?.trim() && <p>Manuscript #{manuscriptId}</p>}<p>Pending editor invitation</p></> : <p>Manuscript #{manuscriptId} · Pending editor invitation</p>}
+                        <button type="button" className={isExpanded ? 'manuscript-back' : 'editor-manage-button manuscript-open-button'} onClick={() => toggleActions(manuscriptId)}>{isExpanded ? 'Back to manuscripts' : 'Open manuscript'}</button>
+                        {isExpanded && <div className="editor-actions">
+                          {manuscript.invitationKinds.includes('initial') && <InitialEditingPanel manuscriptId={manuscriptId} role="editor" token={token} onChanged={refreshAfterInvitation} onOnlineDirtyChange={onOnlineDirtyChange} />}
+                          {manuscript.invitationKinds.includes('final') && <FinalEditingPanel manuscriptId={manuscriptId} role="editor" token={token} onChanged={refreshAfterInvitation} onOnlineDirtyChange={onOnlineDirtyChange} />}
+                        </div>}
+                      </div>;
+                    }
 
                     if (manuscript.formattingOnly) {
                       return (
@@ -546,21 +574,17 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
                           <div className="editor-card-top editor-manuscript-header">
                             <div className="editor-manuscript-title">
                               <h3>{manuscript.title?.trim() || `Manuscript #${manuscriptId}`}</h3>
-                              <p className="editor-manuscript-meta">
-                                {manuscript.title?.trim() && `Manuscript #${manuscriptId} · `}Formatting assignment
-                              </p>
+                              {isExpanded ? <>{manuscript.title?.trim() && <p className="editor-manuscript-meta">Manuscript #{manuscriptId}</p>}<p className="editor-manuscript-meta">Formatting assignment</p></> : <p className="editor-manuscript-meta">{manuscript.title?.trim() && `Manuscript #${manuscriptId} · `}Formatting assignment</p>}
                             </div>
-                            <span className={`editor-status ${manuscript.status}`}>
-                              {formatStatus(manuscript.status)}
-                            </span>
+                            <StatusBadge status={manuscript.status} />
                           </div>
 
                           <button
                             type="button"
-                            className={isExpanded ? "manuscript-back" : "editor-manage-button"}
+                            className={isExpanded ? "manuscript-back" : "editor-manage-button manuscript-open-button"}
                             onClick={() => toggleActions(manuscriptId)}
                           >
-                            {isExpanded ? "Back to Manuscripts" : "Open manuscript"}
+                            {isExpanded ? "Back to manuscripts" : "Open manuscript"}
                           </button>
 
                           {isExpanded && (
@@ -568,6 +592,7 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
                               className="editor-actions"
                               onChangeCapture={() => setDetailDirty(true)}
                             >
+                              <EditorReceivedDocuments token={token} />
                               <details className="editor-context-panel">
                                 <summary>Private Notes</summary>
                                 <div className="editor-context-content">
@@ -589,6 +614,9 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
                               </details>
 
                               <h4 className="editor-workflow-heading">Formatting Workflow</h4>
+
+                              {manuscript.invitationKinds?.includes('initial') && <InitialEditingPanel manuscriptId={manuscriptId} role="editor" token={token} onChanged={loadDashboard} onOnlineDirtyChange={onOnlineDirtyChange} />}
+                              {manuscript.invitationKinds?.includes('final') && <FinalEditingPanel manuscriptId={manuscriptId} role="editor" token={token} onChanged={loadDashboard} onOnlineDirtyChange={onOnlineDirtyChange} />}
 
                               <FormattingPanel
                                 role="editor"
@@ -639,17 +667,13 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
                         <div className="editor-card-top editor-manuscript-header">
                           <div className="editor-manuscript-title">
                             <h3>{manuscript.title?.trim() || `Manuscript #${manuscriptId}`}</h3>
-                            <p className="editor-manuscript-meta">
-                              {manuscript.title?.trim() && `Manuscript #${manuscriptId} · `}
-                              Review Round {activeRound}
-                            </p>
+                            {isExpanded ? <>{manuscript.title?.trim() && <p className="editor-manuscript-meta">Manuscript #{manuscriptId}</p>}{Number.isInteger(manuscript.review_round) && manuscript.review_round > 0 && <p className="editor-manuscript-meta">Review round {manuscript.review_round}</p>}</> : (manuscript.title?.trim() || (Number.isInteger(manuscript.review_round) && manuscript.review_round > 0)) && <p className="editor-manuscript-meta">
+                              {manuscript.title?.trim() && `Manuscript #${manuscriptId}`}
+                              {Number.isInteger(manuscript.review_round) && manuscript.review_round > 0 && <>{manuscript.title?.trim() && ' · '}Review round {manuscript.review_round}</>}
+                            </p>}
                           </div>
 
-                          <span
-                            className={`editor-status ${manuscript.status}`}
-                          >
-                            {formatStatus(manuscript.status)}
-                          </span>
+                          <StatusBadge status={manuscript.status} />
                         </div>
 
                         {isExpanded && (
@@ -682,25 +706,27 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
                                 key={manuscriptId}
                                 manuscriptId={manuscriptId}
                                 token={token}
+                                revision={progressRevision}
                               />
                             </div>
+                            <ManuscriptTimeline manuscriptId={manuscriptId} token={token} revision={progressRevision} />
 
                             <div className="editor-overview-stats">
                               <div className="editor-overview-stat">
-                                <span>Completed Reviews</span>
+                                <span>Completed reviews</span>
                                 <strong>{progress.completed}/{progress.total}</strong>
                                 <small>Reviews submitted</small>
                               </div>
 
                               <div className="editor-overview-stat">
-                                <span>Pending Reviews</span>
+                                <span>Pending reviews</span>
                                 <strong>{progress.pending}</strong>
                                 <small>Awaiting completion</small>
                               </div>
 
                               {manuscript.decision_progress && (
                                 <div className="editor-overview-stat">
-                                  <span>Decision Progress</span>
+                                  <span>Decision progress</span>
                                   <strong>
                                     {Math.min(
                                       manuscript.decision_progress.completed_distinct,
@@ -718,7 +744,7 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
 
                             <div className="editor-overview-status">
                               <div>
-                                <span>Review Status</span>
+                                <span>Review status</span>
                                 <strong className={`editor-review-badge ${progress.reviewStatus}`}>
                                   {formatStatus(progress.reviewStatus)}
                                 </strong>
@@ -752,24 +778,26 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
 
                         <button
                           type="button"
-                          className={isExpanded ? "manuscript-back" : "editor-manage-button"}
+                          className={isExpanded ? "manuscript-back" : "editor-manage-button manuscript-open-button"}
                           onClick={() => toggleActions(manuscriptId)}
                         >
                           {isExpanded
-                            ? "Back to Manuscripts"
+                            ? "Back to manuscripts"
                             : "Open manuscript"}
                         </button>
 
                         {isExpanded && (
                           <div className="editor-actions" onChangeCapture={() => setDetailDirty(true)}>
+                            <EditorReceivedDocuments token={token} />
                             <h4 className="editor-workflow-heading">Manuscript Workflow</h4>
-                            <FinalEditingPanel key={`final-${manuscriptId}`} manuscriptId={manuscriptId} role="editor" token={token} onChanged={loadDashboard} onOnlineDirtyChange={onOnlineDirtyChange} />
-                            <InitialEditingPanel key={`initial-${manuscriptId}`} manuscriptId={manuscriptId} role="editor" token={token} onChanged={loadDashboard} onOnlineDirtyChange={onOnlineDirtyChange} />
+                            <div id={`final-editing-action-${manuscriptId}`}><FinalEditingPanel key={`final-${manuscriptId}`} manuscriptId={manuscriptId} role="editor" token={token} onChanged={loadDashboard} onOnlineDirtyChange={onOnlineDirtyChange} /></div>
+                            <div id={`initial-editing-action-${manuscriptId}`}><InitialEditingPanel key={`initial-${manuscriptId}`} manuscriptId={manuscriptId} role="editor" token={token} onChanged={loadDashboard} onOnlineDirtyChange={onOnlineDirtyChange} /></div>
                             {manuscript.formattingAssigned && (
                               <FormattingPanel
                                 key={`formatting-${manuscriptId}`}
                                 manuscriptId={manuscriptId}
                                 role="editor"
+                                showProgress={false}
                                 token={token}
                                 onChanged={loadDashboard}
                                 onDirtyChange={setFormattingDirty}
@@ -777,7 +805,7 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
                             )}
                             {error && (
                               <div className="editor-error" role="alert">
-                                {error}
+                                {displayError(error)}
                               </div>
                             )}
                             {/* PDF Download */}
@@ -795,15 +823,15 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
                                 >
                                   {actionLoadingId === manuscriptId
                                     ? "Processing..."
-                                    : "Download File"}
+                                    : "Download file"}
                                 </button>
                               ) : (
-                                <p>No PDF Uploaded</p>
+                                <p>No PDF uploaded</p>
                               )}
                             </div>
 
                             <ReviewerInvitationPanel manuscriptId={manuscriptId} round={activeRound} status={manuscript.status} token={token} />
-<MainEditorEmailPanel token={token} manuscriptId={manuscriptId} />
+<EmailDemoPanel />
 
                             {/* Review History */}
                             <div className="editor-action-block">
@@ -845,7 +873,7 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
                                                 <span className="editor-review-eyebrow">
                                                   PEER REVIEW
                                                 </span>
-                                                <h4>Review Round {round}</h4>
+                                                <h4>{round === null ? 'Review round unavailable' : `Review round ${round}`}</h4>
                                               </div>
 
                                               <span className="editor-review-count">
@@ -874,7 +902,7 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
                                                 className="editor-review-conflict"
                                                 role="status"
                                               >
-                                                <strong>Conflicting Recommendations</strong>
+                                                <strong>Conflicting recommendations</strong>
                                                 <p>
                                                   Reviewers disagree in Round {round}.
                                                   The editor must evaluate their comments
@@ -949,7 +977,7 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
                                   </div>
                                   <span className="editor-decision-status">
                                     {legacyDecisionAllowed
-                                      ? canDecide ? "Ready for Decision" : "Awaiting Reviews"
+                                      ? canDecide ? "Ready for decision" : "Awaiting Reviews"
                                       : "EIC Decision"}
                                   </span>
                                 </div>
@@ -1008,7 +1036,7 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
                                         <option value="">Select a decision</option>
                                         <option value="accepted">Accept</option>
                                         <option value="rejected">Reject</option>
-                                        <option value="revision_required">Request Revision</option>
+                                        <option value="revision_required">Request revision</option>
                                       </select>
 
                                       <button
@@ -1049,6 +1077,7 @@ function EditorDashboard({ user, token, registerManuscriptReturn }) {
             </section>
           </>
         )}
+        </div>
       </main>
     </div>
   );

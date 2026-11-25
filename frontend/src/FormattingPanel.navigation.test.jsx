@@ -7,20 +7,20 @@ it('opens one formatter manuscript at a time', async () => {
   render(<FormattingPanel role="formatter" token="synthetic" />);
   const card=(await screen.findByText('#1 Paper 1')).closest('article');
   fireEvent.click(within(card).getByRole('button',{name:'Open manuscript'}));
-  expect(screen.getByText('#1 Paper 1').closest('[data-workspace=selected]')).toBeTruthy();expect(screen.queryByText('#2 Paper 2')).toBeNull();
-  fireEvent.click(screen.getByRole('button',{name:'Back to Manuscripts'}));
+  expect(screen.getByRole('heading',{name:'Paper 1'}).closest('[data-workspace=selected]')).toBeTruthy();expect(screen.queryByText('Paper 2')).toBeNull();
+  fireEvent.click(screen.getByRole('button',{name:'Back to manuscripts'}));
   expect(screen.getByText('#2 Paper 2')).toBeTruthy();
   expect(screen.queryByRole('button',{name:/refresh/i})).toBeNull();
 });
 it('opens only an authorized notification target and allows returning to the list', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => ({ok:true,json:async()=>[1,2].map(id=>({manuscript_id:id,title:`Paper ${id}`,status:'formatting',invitations:[],submissions:[]}))})));
   const {rerender}=render(<FormattingPanel role="formatter" token="synthetic" navigationTarget={{manuscriptId:2}} />);
-  expect(await screen.findByRole('button',{name:'Back to Manuscripts'})).toBeTruthy();
+  expect(await screen.findByRole('button',{name:'Back to manuscripts'})).toBeTruthy();
   expect(screen.queryByText('#1 Paper 1')).toBeNull();
-  fireEvent.click(screen.getByRole('button',{name:'Back to Manuscripts'}));
+  fireEvent.click(screen.getByRole('button',{name:'Back to manuscripts'}));
   expect(await screen.findByText('#1 Paper 1')).toBeTruthy();
   rerender(<FormattingPanel role="formatter" token="synthetic" navigationTarget={{manuscriptId:99}} />);
-  expect(screen.queryByRole('button',{name:'Back to Manuscripts'})).toBeNull();
+  expect(screen.queryByRole('button',{name:'Back to manuscripts'})).toBeNull();
 });
 
 it('preserves unsaved changes when navigation is cancelled', async () => {
@@ -64,8 +64,8 @@ it('preserves unsaved changes when navigation is cancelled', async () => {
   );
 
   expect(window.confirm).toHaveBeenCalledOnce();
-  expect(screen.getByText('#1 Paper 1')).toBeTruthy();
-  expect(screen.queryByText('#2 Paper 2')).toBeNull();
+  expect(screen.getByRole('heading',{name:'Paper 1'})).toBeTruthy();
+  expect(screen.queryByText('Paper 2')).toBeNull();
   expect(screen.getByLabelText('Comments').value).toBe('Keep this draft.');
 });
 
@@ -99,11 +99,11 @@ it('preserves unsaved changes when returning to the manuscript list is cancelled
   fireEvent.change(comments, { target: { value: 'Do not discard.' } });
 
   fireEvent.click(
-    screen.getByRole('button', { name: 'Back to Manuscripts' })
+    screen.getByRole('button', { name: 'Back to manuscripts' })
   );
 
   expect(window.confirm).toHaveBeenCalledOnce();
-  expect(screen.getByText('#1 Paper 1')).toBeTruthy();
+  expect(screen.getByRole('heading',{name:'Paper 1'})).toBeTruthy();
   expect(screen.getByLabelText('Comments').value).toBe('Do not discard.');
 });
 
@@ -131,10 +131,10 @@ it('never displays an earlier manuscript response after the EIC switches context
   }));
   const {rerender}=render(<FormattingPanel role="eic" manuscriptId={1} token="synthetic" canInvite />);
   rerender(<FormattingPanel role="eic" manuscriptId={2} token="synthetic" canInvite />);
-  await screen.findByText('Manuscript: formatting');
+  await screen.findByText('Manuscript: Formatting');
   await act(async()=>finishFirst({ok:true,json:async()=>({manuscript_id:1,title:'Stale paper',status:'published',invitations:[],submissions:[]})}));
   expect(screen.queryByText(/Stale paper/)).toBeNull();
-  expect(screen.getByText('Manuscript: formatting')).toBeTruthy();
+  expect(screen.getByText('Manuscript: Formatting')).toBeTruthy();
   expect(screen.queryByText('Manuscript: published')).toBeNull();
 });
 
@@ -150,6 +150,10 @@ it('shows staff and personal panels only for an accepted formatter assignment', 
   vi.stubGlobal('fetch',vi.fn(async url=>({ok:true,json:async()=>String(url).includes('/notes')||String(url).includes('/general-comments')?[]:[{manuscript_id:8,title:'Assigned',status:'formatting',invitations:[{invitation_id:3,formatter:'Formatter',status:'accepted'}],submissions:[]}]})));
   render(<FormattingPanel role="formatter" token="synthetic" />);
   fireEvent.click(await screen.findByRole('button',{name:'Open manuscript'}));
+  const sidebar=screen.getByLabelText('Manuscript statistics');
+  expect(sidebar.classList.contains('manuscripts-list-sidebar')).toBe(true);
+  expect(sidebar.parentElement.querySelector('.manuscripts-list-content')).toBeTruthy();
+  expect(screen.queryByText('Stage Threads')).toBeNull();
   expect(screen.getByText('Private Notes')).toBeTruthy();
   expect(screen.getByText('Comments (Staff Shared)')).toBeTruthy();
 });
@@ -186,7 +190,7 @@ it('protects an unsaved personal note when a notification selects another assign
   fireEvent.change(screen.getByLabelText('New note'),{target:{value:'Unsaved note'}});
   rerender(<FormattingPanel role="formatter" token="synthetic" navigationTarget={{manuscriptId:2}} />);
   expect(screen.getByLabelText('New note').value).toBe('Unsaved note');
-  expect(screen.getByRole('heading',{name:'#1 Paper 1'})).toBeTruthy();
+  expect(screen.getByRole('heading',{name:'Paper 1'})).toBeTruthy();
   rerender(<FormattingPanel role="formatter" token="synthetic" navigationTarget={{manuscriptId:2}} />);
-  expect(await screen.findByRole('heading',{name:'#2 Paper 2'})).toBeTruthy();
+  expect(await screen.findByRole('heading',{name:'Paper 2'})).toBeTruthy();
 });

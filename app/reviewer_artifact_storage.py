@@ -6,12 +6,14 @@ mounts or protect against a privileged process modifying private files.
 Validation checks structure only; it does not establish anonymity or safety.
 """
 from dataclasses import dataclass
+from contextlib import contextmanager
 import hashlib
 import hmac
 import os
 from pathlib import Path
 import re
 import stat
+import time
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -164,6 +166,21 @@ class ArtifactStorage:
         except OSError as error:
             raise StorageError('Storage inventory unavailable') from error
 
+    def inspect_reserved(self, storage_id):
+        """Report file type, ownership and age without following links or editing."""
+        if not isinstance(storage_id, str) or not _ID.fullmatch(storage_id):
+            raise StorageError('Invalid storage identifier')
+        try:
+            info = os.stat(storage_id, dir_fd=self._require_open(), follow_symlinks=False)
+        except FileNotFoundError:
+            return {'state': 'missing'}
+        except OSError as error:
+            raise StorageError('Storage inventory unavailable') from error
+        regular = stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+        return {'state': 'regular' if regular else 'unsafe',
+                'owned_by_service': info.st_uid == os.geteuid(),
+                'age_seconds': max(0, int(time.time() - info.st_mtime))}
+
     def publish_reserved(self, storage_id, content, fmt):
         """Publish a server-reserved ID. Caller must durably reserve it first.
 
@@ -282,3 +299,19 @@ class ArtifactStorage:
             finally: os.close(fd)
         except OSError as error:
             raise StorageError('Artifact unavailable') from error
+
+    @contextmanager
+    def open_verified(self, metadata):
+        """Yield a private, no-follow descriptor after verifying its contents."""
+        directory = self._require_open()
+        if not isinstance(metadata, StorageMetadata) or not isinstance(metadata.storage_id, str) or not _ID.fullmatch(metadata.storage_id):
+            raise StorageError('Invalid storage identifier')
+        try:
+            fd = os.open(metadata.storage_id, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        except OSError as error:
+            raise StorageError('Artifact unavailable') from error
+        try:
+            read_verified_fd(fd, metadata.sha256, metadata.byte_size, metadata.format)
+            yield fd
+        finally:
+            os.close(fd)

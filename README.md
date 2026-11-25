@@ -2,7 +2,9 @@
 
 G-SUB is a manuscript submission and peer-review management application for academic editorial workflows. It provides role-specific workspaces for authors, editors, reviewers, and an Editor-in-Chief (EIC), with formatting work available through the existing editor/formatter account model.
 
-> **Development status:** This is a collaboration baseline, not a production release. Some workflows are partial. In particular, EIC prospective approval-proof issuance and valid-proof Double Blind document release are not complete.
+> **Supported scope:** Collaboration Development only. This is not a production release. Legacy Demo launchers and tests are retained for history but are not supported by this configuration; Demo mode is rejected. Some workflows are partial.
+
+> **Reconciliation candidate:** The newer schema bootstrap is restricted to a disposable clone under a system temporary directory. The migration chain has been rehearsed on a new empty database; existing databases, full workflows, and production upgrades have not been validated. See [bootstrap notes](database/bootstrap/README.md).
 
 ## Project overview
 
@@ -24,12 +26,16 @@ These features are implemented to different levels of completeness; a listed cap
 | Role | Responsibilities and access |
 | --- | --- |
 | Author | Creates and submits manuscripts, manages permitted versions and revisions, and responds to applicable editorial requests. |
-| EIC | Screens manuscripts, coordinates assignments and review, makes editorial decisions, and manages authorized document distribution. |
-| General / Copy Editor | Works on assigned initial or final editing tasks and permitted manuscript documents. |
+| EIC | Screens manuscripts, coordinates assignments and review, makes editorial decisions, and manages authorized document distribution. Authorized administrators can manage EIC lifecycle and succession under the separate protected procedures and limitations. |
+| General / Copy Editor | Serves as an assigned Initial Editor or Final Editor, working on the editing tasks and manuscript documents allowed by that assignment. |
 | Reviewer | Responds to assigned review work and submits permitted comments, recommendations, or a reviewed document. |
 | Formatter | Performs assigned formatting work through the existing editor/formatter workspace model. |
 
 The sign-in chooser groups Formatter with General / Copy Editor. This presentation does not change stored roles or grant permissions. Self-registration currently creates author accounts; other role provisioning requires an existing administrative or development process.
+
+Reviewer document downloads require an active reviewer account and an accepted, non-invalidated assignment in the current review round and review stage. Completed, expired, pending, declined, legacy-only, or stale assignments do not authorize a download, including downloads of the reviewer's own submitted documents. Historical listings can remain visible. The current invitation schema does not define a time-based expiry timestamp.
+
+Historical reviewer enrollment and reactivation are not yet supported by a verified production-facing workflow; see [reviewer lifecycle limitations](docs/REVIEWER_ACCOUNT_LIFECYCLE.md).
 
 ## Technology stack
 
@@ -75,9 +81,13 @@ The repository also contains migration scripts and a collaboration-only database
 
 ## Installation
 
-Clone the repository and create independent local dependency environments:
+Use a disposable clone under the actual system temporary directory recognized by
+Python. Set `TMPDIR` to that directory if your environment does not already do
+so; it must not point at a persistent project or production data. Then clone
+the repository there and create independent local dependency environments:
 
 ```sh
+cd "$TMPDIR"
 git clone https://github.com/nobleyaoyin/manuscript-submission-system-main.git
 cd manuscript-submission-system-main
 
@@ -96,7 +106,7 @@ The backend requires two environment variables:
 | Variable | Purpose |
 | --- | --- |
 | `COLLABORATION_DATABASE` | Absolute path to an existing, private SQLite file directly inside this workspace's `.test-data` directory. |
-| `SECRET_KEY` | Private signing key for authentication tokens. Generate a unique value for each development environment. |
+| `SECRET_KEY` | Private signing key for authentication tokens. Use a unique, randomly generated value of at least 32 UTF-8 bytes for each development environment. |
 
 `.env.example` describes the variables with placeholders. Do not use its placeholder signing key. The following generates a temporary shell key without printing it:
 
@@ -108,17 +118,25 @@ A new key invalidates tokens created with an earlier key. If local login session
 
 ## Database initialization
 
-**Collaboration Base Schema v1 is a newly established collaboration baseline; it is not a reconstruction of a historical pre-001 production schema.** The initializer applies the baseline and migrations 001–019 and 021 to a new disposable SQLite file. There is no migration 020.
+**Collaboration Base Schema v1 is a newly established collaboration baseline; it is not a reconstruction of a historical pre-001 production schema.** The initializer applies the baseline, migrations 001–019 and 021–040, and atomic migration 046 to a new disposable SQLite file. Migration 046 owns the submission schema and records the identities of 041–045; do not run 041–045 before it. There is no migration 020. The clone and its database must be within the system temporary directory recognized by Python; this is not a persistent installation or upgrade procedure.
 
 Create an independent local database from the repository root:
 
 ```sh
 mkdir -p .test-data
 .venv312/bin/python -m database.bootstrap.initialize --name local.sqlite
-export COLLABORATION_DATABASE="$PWD/.test-data/local.sqlite"
+export COLLABORATION_DATABASE="$(pwd -P)/.test-data/local.sqlite"
 ```
 
 The initializer requires an owner-controlled, non-symlink `.test-data` directory and refuses an existing filename. If initialization fails, it retains the partial file for inspection; choose a new filename for a subsequent attempt. Each migration has its own transaction. Never point the application or migrations at an original Main or production database. See [database/bootstrap/README.md](database/bootstrap/README.md) for schema ownership and limitations.
+
+Migration 046 is an atomic, temporary-database-only alternative to 041–045.
+It has been rehearsed against synthetic data; it does not authorize or verify
+an upgrade or restoration of an existing Main database. A future upgrade needs
+an approved plan and independently restorable, consistent backups of the
+database and its journal/WAL state, uploads, and every configured private
+artifact and attachment store. Preserve the corresponding protected
+configuration separately; never put backups or credentials in Git.
 
 ## Backend startup
 
@@ -143,25 +161,40 @@ Open the local URL printed by Vite. Set `VITE_API_PROXY_TARGET` if the backend i
 
 ## Testing instructions
 
-Use synthetic accounts and files only. Ensure the environment variables above point to your **independent local** database, and choose a new pytest base directory for each run:
+Use synthetic accounts and files only. Ensure the environment variables above point to your **independent local** database, and choose a new pytest base directory for each run. The full historical backend suite includes four unsupported legacy Demo cases and is not a clean pass. The Collaboration Development selection explicitly deselects only those four cases; its results do not validate Demo:
 
 ```sh
-mkdir -p .test-data/tmp
-export TMPDIR="$PWD/.test-data/tmp"
-PYTHONDONTWRITEBYTECODE=1 .venv312/bin/python -m pytest -p no:cacheprovider \
-  --basetemp "$PWD/.test-data/pytest-local" \
-  tests/test_phase26_backend_integration.py \
-  tests/test_main_reviewer_authority.py \
-  tests/test_main_reviewer_dependencies.py \
-  tests/test_collaboration_initializer.py \
-  tests/test_collaboration_base_v1.py -q
+test_tmp="$(mktemp -d "${TMPDIR%/}/gsub-tests.XXXXXXXX")"
+PYTHONPATH=tests PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv312/bin/python -m pytest -p no:cacheprovider \
+  --continue-on-collection-errors --basetemp "$test_tmp/pytest" \
+  --deselect tests/test_demo_security.py::DemoSecurityTest::test_demo_initialization_and_security \
+  --deselect tests/test_demo_security.py::DemoSecurityTest::test_unsafe_roots_and_missing_credentials_fail \
+  --deselect tests/test_initializer_schema_contract.py::InitializerSchemaContractTests::test_fresh_initializer_respects_migration_ownership \
+  --deselect tests/test_synthetic_demo_007_009.py::SyntheticDemoUpgrade::test_fresh_real_initializer_then_isolated_upgrade \
+  tests -q
 
 cd frontend
 npx vitest run
 npm run build
 ```
 
-Replace `pytest-local` with an unused name on subsequent runs: pytest may remove an existing base directory. Tests and browser workflows must not use real manuscripts, persistent Main data, or real email delivery. The published test set does not include all local development fixtures.
+The command creates a new temporary parent for each run; pytest may remove its
+own base directory. Tests and browser workflows must not use real manuscripts,
+persistent Main data, or real email delivery. See the
+[release scope and limitations](docs/RELEASE_SCOPE_AND_KNOWN_LIMITATIONS.md).
+
+Optional Google sign-in, CAPTCHA, email delivery, ONLYOFFICE, and private
+artifact stores require their own configuration and credentials. Their real
+external services were not tested for this release. Keep those values outside
+Git and do not start or expose services without authorization.
+
+Author submission attachments require `GSUB_SUBMISSION_ATTACHMENT_ROOT` to
+name an existing absolute directory outside the project, owned by the application
+user and inaccessible to group and other users. Use a private directory with
+mode `0700`; symlinked path components are rejected. Existing attachment stores
+that do not meet these requirements will be unavailable until an operator
+independently verifies their permissions and location. Do not move existing data
+as part of setup without a separately approved preservation plan.
 
 ## Security and privacy
 
@@ -183,6 +216,8 @@ These controls do not replace independent security review before deployment.
 | **Prototype** | The author-agreement text is a placeholder and is not approved legal terms. Publication is recorded locally as a prototype; an external DOI or journal publication is not established. |
 | **Limited** | Email and document distribution have distinct status and authorization rules; automatic distribution is not enabled as a general release policy. |
 | **Development** | The collaboration bootstrap and overall application require further integration and security review before production use. |
+| **Security review required** | The pinned Authlib and Vite dependencies have recorded advisory findings. Patched versions and compatibility have not been verified; do not expose the development server. |
+| **Database safety** | EIC bootstrap and succession do not independently prove SQLite opened the authorized database object. Migration alias checks do not establish a disposable target. Persistent bootstrap, succession and upgrades remain unsupported. |
 
 ## Roadmap
 

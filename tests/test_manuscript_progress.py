@@ -18,7 +18,7 @@ class ManuscriptProgressTests(ReviewerDownloadsTest):
         self.assertEqual(data["status"], "ready_for_peer_review")
         self.assertEqual(data["review_round"], 1)
         self.assertEqual(data["current_stage"], "Peer Review")
-        self.assertEqual(len(data["stages"]), 9)
+        self.assertEqual(len(data["stages"]), 10)
 
         self.assertEqual(
             [stage["name"] for stage in data["stages"]],
@@ -31,6 +31,7 @@ class ManuscriptProgressTests(ReviewerDownloadsTest):
                 "Author Agreement",
                 "Final Editing",
                 "Formatting",
+                "Proofing",
                 "Publication",
             ],
         )
@@ -64,6 +65,7 @@ class ManuscriptProgressTests(ReviewerDownloadsTest):
         self.assertEqual(response.status_code, 404, response.text)
 
     def test_assigned_reviewer_allowed(self):
+        self.select_single_blind_policy()
         assigned = self.assign(self.reviewer, 1)
         self.assertEqual(assigned.status_code, 201, assigned.text)
 

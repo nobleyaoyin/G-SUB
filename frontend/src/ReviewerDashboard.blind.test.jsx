@@ -19,6 +19,36 @@ it('shows download for a minimal accepted assignment and reports unavailable art
   expect(screen.queryByText(/Invalid Date/)).toBeNull();
 });
 
+it('keeps reviewer statistics beside the selected assignment without stage threads', async () => {
+  const headers = new Headers({'content-type':'application/json'});
+  vi.stubGlobal('fetch', vi.fn(async url => ({ok:true, headers, json:async()=>
+    url.endsWith('/assignments/my') ? [{assignment_id:4,manuscript_id:3,review_round:1,status:'assigned',invitation_status:'accepted'}]
+    : {manuscript_id:3,review_round:1,stages:[]}})));
+  render(<ReviewerDashboard user={{user_id:1,name:'Synthetic'}} token="synthetic" section="manuscripts" />);
+  await userEvent.click(await screen.findByRole('button',{name:'Open manuscript'}));
+  const sidebar=screen.getByLabelText('Manuscript statistics');
+  expect(sidebar.classList.contains('manuscripts-list-sidebar')).toBe(true);
+  expect(sidebar.parentElement.querySelector('.manuscripts-list-content [data-workspace="selected"]')).toBeTruthy();
+  expect(screen.queryByText('Stage Threads')).toBeNull();
+});
+
+it('keeps the protected title fallback and round once when details open', async () => {
+  const headers = new Headers({'content-type':'application/json'});
+  vi.stubGlobal('fetch', vi.fn(async url => ({ok:true, headers, json:async()=>
+    url.endsWith('/assignments/my') ? [{assignment_id:4,manuscript_id:3,review_round:1,status:'assigned',invitation_status:'accepted'}]
+    : url.endsWith('/progress') ? {manuscript_id:3,title:'Hidden title',review_round:1,stages:[]}
+    : {manuscript_id:3,review_round:1}})));
+  render(<ReviewerDashboard user={{user_id:1,name:'Synthetic'}} token="synthetic" />);
+  await userEvent.click(await screen.findByRole('button',{name:'Open manuscript'}));
+  await userEvent.click(screen.getByRole('button',{name:'View manuscript details'}));
+  expect(await screen.findByText('No additional author information is available.')).toBeTruthy();
+  const workspace = screen.getByRole('heading',{name:'Manuscript #3'}).closest('[data-workspace=selected]');
+  expect(within(workspace).getAllByText('Manuscript #3')).toHaveLength(1);
+  expect(within(workspace).getByRole('heading',{name:'Review documents · Round 1'})).toBeTruthy();
+  expect(within(workspace).queryByText(/Review round 1/)).toBeNull();
+  expect(within(workspace).queryByText('Hidden title')).toBeNull();
+});
+
 
 it('returns the actual reviewer assignment to the list with a protected title fallback', async () => {
   const headers=new Headers({'content-type':'application/json'});
@@ -47,7 +77,7 @@ it('ignores a delayed manuscript A detail failure after switching to B', async (
   render(<ReviewerDashboard user={{user_id:1,name:'Synthetic'}} token="synthetic" />);
   fireEvent.click(within((await screen.findByRole('heading',{name:'Manuscript #1'})).closest('.reviewer-card')).getByRole('button',{name:'Open manuscript'}));
   fireEvent.click(screen.getByRole('button',{name:'View manuscript details'}));
-  fireEvent.click(screen.getByRole('button',{name:'Back to Manuscripts'}));
+  fireEvent.click(screen.getByRole('button',{name:'Back to manuscripts'}));
   fireEvent.click(within(screen.getByRole('heading',{name:'Manuscript #2'}).closest('.reviewer-card')).getByRole('button',{name:'Open manuscript'}));
   await act(async()=>resolveA({ok:false,headers,json:async()=>({detail:'STALE A ERROR'})}));
   await waitFor(()=>expect(screen.queryByText('STALE A ERROR')).toBeNull());
@@ -180,7 +210,7 @@ it.each(['selection', 'identity', 'current'])('guards a successful download for 
   fireEvent.click(screen.getByRole('button', { name: 'Download Review File' }));
   await waitFor(() => expect(resolveDownload).toBeDefined());
   if (scenario === 'selection') {
-    fireEvent.click(screen.getByRole('button', { name: 'Back to Manuscripts' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Back to manuscripts' }));
     fireEvent.click(within(screen.getByRole('heading', { name: 'Manuscript #2' }).closest('.reviewer-card')).getByRole('button', { name: 'Open manuscript' }));
   } else if (scenario === 'identity') {
     rerender(<ReviewerDashboard user={{ user_id: 2, name: 'B' }} token="b" />);
@@ -209,6 +239,8 @@ it('keeps a review on cancelled return and clears it after confirmed return', as
   fireEvent.change(screen.getByLabelText(/Review Comments/),{target:{value:'Private draft A'}});
   act(()=>expect(goBack()).toBe(false));
   expect(screen.getByLabelText(/Review Comments/).value).toBe('Private draft A');
+  expect(screen.getByRole('heading',{name:'Review documents · Round 1'})).toBeTruthy();
+  expect(screen.getByText('Assignment #1')).toBeTruthy();
   act(()=>expect(goBack()).toBe(true));
   fireEvent.click(within(screen.getByRole('heading',{name:'Manuscript #2'}).closest('.reviewer-card')).getByRole('button',{name:'Open manuscript'}));
   expect(screen.getByLabelText(/Review Comments/).value).toBe('');

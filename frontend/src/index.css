@@ -2,12 +2,29 @@
 :root {
   color-scheme: light;
   --brand-navy: #0f172a;
+  --brand-navy-deep: #0a1525;
   --brand-gold: #e7be45;
+  --heading-ink: #172b4d;
+  --neutral-ink: #334155;
+  --border-soft: #e2e8f0;
+  --action-accent: #2563eb;
+  --danger-strong: #991b1b;
+  --role-eic: #e9c95b;
+  --role-editor: #80b6ff;
+  --role-reviewer: #c2a7ff;
+  --role-author: #78d7b1;
+  --role-formatter: #8dd7e8;
+  --role-eic-surface: #3a382e;
+  --role-editor-surface: #203a5b;
+  --role-reviewer-surface: #312d51;
+  --role-author-surface: #173d3a;
+  --role-formatter-surface: #183a43;
   --surface-secondary: #f8fafc;
   --surface-elevated: #ffffff;
   --text-muted: #526176;
   --border-subtle: #cbd5e1;
   --action-primary: #1d4ed8;
+  --action-primary-text: #ffffff;
   --action-primary-hover: #1e40af;
   --action-secondary-surface: #eff6ff;
   --info-text: #173a78;
@@ -67,7 +84,7 @@ input::placeholder, textarea::placeholder {
 }
 
 button:focus-visible, input:focus-visible, select:focus-visible,
-textarea:focus-visible, a:focus-visible {
+textarea:focus-visible, a:focus-visible, summary:focus-visible {
   outline: 3px solid var(--focus-ring);
   outline-offset: 3px;
 }
@@ -88,10 +105,18 @@ button:disabled {
 [data-online-editor] [role="alert"] { color: var(--error-text); }
 [data-online-editor] [role="status"] { color: var(--success-text); }
 
-.manuscript-back { display: inline-flex; align-items: center; margin: 0 0 1rem; padding: .5rem .75rem; border: 1px solid #94a3b8; border-radius: 8px; color: #1e3a5f; background: #fff; cursor: pointer; }
-.manuscript-back:hover { background: #eff6ff; }
+.manuscript-back { display: inline-flex; align-items: center; margin: 0 0 1rem; padding: .5rem .75rem; border: 1px solid var(--control-border); border-radius: 8px; color: var(--info-text); background: var(--surface-control); cursor: pointer; }
+.manuscript-back:hover { background: var(--action-secondary-surface); }
 
 /* Keep role and workflow headings readable without changing the timeline. */
 .dashboard-main > h2, .editor-main > h2, .reviewer-main > h2,
 .eic-page > header h1, .initial-editing-heading h2 { color: var(--text-primary); line-height: 1.25; }
 .eic-page form label, .initial-editing-form label { color: var(--text-primary); }
+.manuscript-open-button.manuscript-open-button {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 42px; padding: 10px 20px; border: 0; border-radius: 8px;
+  background: #1d4ed8; color: #fff; font-size: 14px; font-weight: 650;
+  cursor: pointer; text-align: center; transition: background .2s ease;
+}
+.manuscript-open-button.manuscript-open-button:hover { background: #1e40af; color: #fff; }
+.manuscript-open-button.manuscript-open-button:focus-visible { outline: 3px solid #b8860b; outline-offset: 2px; }

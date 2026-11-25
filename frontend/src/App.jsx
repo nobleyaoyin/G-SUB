@@ -8,8 +8,10 @@ import EditorDashboard from "./EditorDashboard";
 import EICDashboard from "./EICDashboard";
 import FormattingPanel from "./FormattingPanel";
 import NotificationBell from "./NotificationBell";
+import AuthorNotificationCenter from "./AuthorNotificationCenter";
 import { PRODUCT_DISPLAY_NAME, PRODUCT_SYSTEM_NAME } from "./branding";
 import SharedSidebar from "./SharedSidebar";
+import UserMenu from "./UserMenu";
 import RoleSelection from "./RoleSelection";
 import { roleLabels } from "./roleLabels";
 
@@ -46,6 +48,8 @@ function matchesSelectedRole(accountRole, selectedRole) {
 
 function App() {
   const [formatterTarget, setFormatterTarget] = useState(null);
+  const [formatterNotifications, setFormatterNotifications] = useState(null);
+  const receiveFormatterNotifications = useCallback(value => setFormatterNotifications(value), []);
   const [isLogin, setIsLogin] = useState(true);
   const [selectedRole, setSelectedRole] = useState(null);
   const [captcha, setCaptcha] = useState(null);
@@ -390,22 +394,24 @@ function App() {
   // Shared layout for authenticated dashboard roles.
   if (user && ["author", "editor", "reviewer", "eic", "formatter"].includes(user.role)) {
     let dashboard;
+    const accountControl = <UserMenu user={user} onLogout={handleLogout} onProfile={user.role === 'author' ? () => { if (manuscriptReturnRef.current?.() === false) return; setActiveSection('profile'); } : undefined} />;
 
     if (user.role === "author") {
-      dashboard = <AuthorDashboard user={user} token={token} registerManuscriptReturn={registerManuscriptReturn} />;
+      dashboard = <AuthorDashboard key={token} user={user} token={token} accountControl={accountControl} registerManuscriptReturn={registerManuscriptReturn} section={activeSection} onSectionChange={setActiveSection} />;
     } else if (user.role === "editor") {
-      dashboard = <EditorDashboard user={user} token={token} registerManuscriptReturn={registerManuscriptReturn} />;
+      dashboard = <EditorDashboard user={user} token={token} accountControl={accountControl} registerManuscriptReturn={registerManuscriptReturn} section={activeSection} onSectionChange={setActiveSection} />;
     } else if (user.role === "reviewer") {
-      dashboard = <ReviewerDashboard user={user} token={token} onProfileDirtyChange={handleProfileDirtyChange} registerManuscriptReturn={registerManuscriptReturn} />;
+      dashboard = <ReviewerDashboard user={user} token={token} accountControl={accountControl} onProfileDirtyChange={handleProfileDirtyChange} registerManuscriptReturn={registerManuscriptReturn} section={activeSection} onSectionChange={setActiveSection} />;
     } else if (user.role === "eic") {
-      dashboard = <EICDashboard user={user} token={token} registerManuscriptReturn={registerManuscriptReturn} />;
+      dashboard = <EICDashboard user={user} token={token} accountControl={accountControl} registerManuscriptReturn={registerManuscriptReturn} section={activeSection} onSectionChange={setActiveSection} />;
     } else {
       dashboard = (
         <main>
-          <h1>General / Copy Editor Dashboard</h1>
-          <p>Welcome, {user.name}</p>
-          <NotificationBell token={token} onNavigate={item => setFormatterTarget({ manuscriptId: item.manuscript_id })} />
-          <FormattingPanel role="formatter" token={token} navigationTarget={formatterTarget} registerManuscriptReturn={registerManuscriptReturn} />
+          <header className="formatter-shell-header"><div><h1>General / Copy Editor Dashboard</h1>
+          <p>Welcome, {user.name}</p></div>
+          <div className="dashboard-utilities"><NotificationBell token={token} onNavigate={item => { setFormatterTarget({ manuscriptId: item.manuscript_id }); setActiveSection("manuscripts"); }} onViewAll={() => { if (manuscriptReturnRef.current?.() !== false) setActiveSection("notifications"); }} onAuthorSnapshot={receiveFormatterNotifications} />{accountControl}</div></header>
+          {activeSection === 'notifications' && <AuthorNotificationCenter snapshot={formatterNotifications} token={token} onOpen={item => { setFormatterTarget({manuscriptId:item.manuscript_id}); setActiveSection('manuscripts'); }} onBack={() => setActiveSection('dashboard')} />}
+          <div hidden={activeSection === 'notifications'}><FormattingPanel role="formatter" token={token} navigationTarget={formatterTarget} registerManuscriptReturn={registerManuscriptReturn} section={activeSection} onSectionChange={setActiveSection} /></div>
         </main>
       );
     }
@@ -415,26 +421,22 @@ function App() {
       <>
       {verifying && <p role="status">Checking your session...</p>}
       <div className="app-shell" hidden={verifying} style={verifying ? { display: 'none' } : undefined}>
-        <SharedSidebar user={user} onLogout={handleLogout} activeSection={activeSection} googleLink={googleAvailable ? <GoogleLinkPanel token={token} role={user.role} /> : null} onNavigate={(section) => {
+        <SharedSidebar user={user} activeSection={activeSection} googleLink={googleAvailable ? <GoogleLinkPanel token={token} role={user.role} /> : null} onNavigate={(section) => {
           const content = contentRef.current;
-          if (section === "notifications") {
-            const bell = content?.querySelector(".notification-bell");
-            if (bell) {
-              bell.scrollIntoView?.({ block: "center" });
-              if (bell.getAttribute("aria-expanded") !== "true") bell.click();
-              bell.focus();
-              setActiveSection(section);
-            }
-          } else if (section === "manuscripts") {
+          if (user.role === 'author') {
             if (manuscriptReturnRef.current?.() === false) return;
             setActiveSection(section);
-            requestAnimationFrame(() => {
-              const target = contentRef.current?.querySelector('[data-sidebar-target="manuscripts"]');
-              if (target) { target.setAttribute("tabindex", "-1"); target.focus(); target.scrollIntoView?.({ block: "start" }); }
-            });
-          } else if (content) {
-            content.scrollIntoView?.({ block: "start" }); setActiveSection(section);
+            if (section === 'manuscripts') {
+              requestAnimationFrame(() => {
+                const target = contentRef.current?.querySelector('[data-sidebar-target="manuscripts"]');
+                if (target) { target.setAttribute('tabindex', '-1'); target.focus(); target.scrollIntoView?.({ block: 'start' }); }
+              });
+            } else content?.scrollIntoView?.({block:'start'});
+            return;
           }
+          if (manuscriptReturnRef.current?.() === false) return;
+          setActiveSection(section);
+          content?.scrollIntoView?.({ block: "start" });
         }} />
         <div className="app-shell-content" ref={contentRef}>{dashboard}</div>
       </div>

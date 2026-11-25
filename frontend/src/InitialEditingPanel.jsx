@@ -1,5 +1,6 @@
+import {workflowStatusLabel} from './workflowStatus';
 import useReturnRefresh from "./useReturnRefresh";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { API_URL } from "./api";
 import "./InitialEditingPanel.css";
 import OnlineDocumentEditor from "./OnlineDocumentEditor";
@@ -7,7 +8,7 @@ import OnlineDocxEditor from "./OnlineDocxEditor";
 import { initialEditingPrompt } from "./participantPrompts";
 import EditorInvitationSummary from "./EditorInvitationSummary";
 
-const readable = value => (value || "unknown").replaceAll("_", " ");
+const readable = workflowStatusLabel;
 
 function EditingItem({ item, role, perform, download, busy, token, onOnlineDirtyChange, showTitle, stale }) {
   const [decision, setDecision] = useState("");
@@ -38,21 +39,23 @@ function EditingItem({ item, role, perform, download, busy, token, onOnlineDirty
       setComments(""); setFile(null); setOnlineVersion(null); setFileKey(key => key + 1);
     }
   };
+  const renderSubmission = submission => <div className="initial-editing-submission" key={submission.submission_id}>
+    <p><strong>Initial-editing document #{submission.submission_id}:</strong> {readable(submission.status)}{submission.confirmation && ` · author confirmation: ${readable(submission.confirmation)}`}</p>
+    <p>Editor: {submission.comments}{submission.author_comments && ` · Author: ${submission.author_comments}`}{submission.editor_comments && ` · Editor approval: ${submission.editor_comments}`}{submission.eic_comments && ` · EIC: ${submission.eic_comments}`}</p>
+    <button type="button" disabled={busy} onClick={() => download(submission.submission_id)}>Download initial-editing document</button>
+  </div>;
   return <article className="initial-editing-item">
-    {showTitle && <h3>#{item.manuscript_id} {item.title}</h3>}
+    {showTitle && <h3>{typeof item.title === "string" && item.title.trim() ? `#${item.manuscript_id} ${item.title.trim()}` : `Manuscript #${item.manuscript_id}`}</h3>}
     <p><strong>Manuscript status:</strong> {readable(item.status)}</p>
-    {role === "editor" && item.invitation && <EditorInvitationSummary title={item.title} status={item.invitation.status} abstract={item.invitation_abstract} editor={item.invitation.editor} invitedAt={item.invitation.invited_at} respondedAt={item.invitation.responded_at} stage="Initial editor" />}
+    {role === "editor" && item.invitation && <EditorInvitationSummary showManuscriptTitle={false} title={item.title} status={item.invitation.status} abstract={item.invitation_abstract} metadata={item.invitation_metadata} editor={item.invitation.editor} invitedAt={item.invitation.invited_at} respondedAt={item.invitation.responded_at} stage="Initial editor" />}
     {item.invitation && <p><strong>Initial editor:</strong> {item.invitation.editor} · {readable(item.invitation.status)}</p>}
     <p><strong>{showTitle ? "Next action:" : "Stage guidance:"}</strong> {initialEditingPrompt(item, role, stale)}</p>
     {role === "editor" && item.status === "initial_editor_invited" && item.invitation?.status === "pending" && <div className="initial-editing-buttons">
       <button type="button" disabled={busy} onClick={() => perform(`/eic/initial-editor/invitations/${item.invitation.invitation_id}/respond`, { decision: "accept" })}>Accept invitation</button>
       <button type="button" disabled={busy} onClick={() => perform(`/eic/initial-editor/invitations/${item.invitation.invitation_id}/respond`, { decision: "decline" })}>Decline invitation</button>
     </div>}
-    {visibleSubmissions.map(submission => <div className="initial-editing-submission" key={submission.submission_id}>
-      <p><strong>Initial-editing document #{submission.submission_id}:</strong> {readable(submission.status)}{submission.confirmation && ` · author confirmation: ${readable(submission.confirmation)}`}</p>
-      <p>Editor: {submission.comments}{submission.author_comments && ` · Author: ${submission.author_comments}`}{submission.editor_comments && ` · Editor approval: ${submission.editor_comments}`}{submission.eic_comments && ` · EIC: ${submission.eic_comments}`}</p>
-      <button type="button" disabled={busy} onClick={() => download(submission.submission_id)}>Download initial-editing document</button>
-    </div>)}
+    {current && renderSubmission(current)}
+    {visibleSubmissions.length > 1 && <details><summary>Earlier initial-editing documents</summary>{visibleSubmissions.slice(1).map(renderSubmission)}</details>}
     {canUpload && <OnlineDocumentEditor manuscriptId={item.manuscript_id} token={token} stage="initial" onUseSaved={(selected, version) => { setFile(selected); setOnlineVersion(version); }} onDirtyChange={dirty => onOnlineDirtyChange?.(`initial-${item.manuscript_id}`, dirty)} />}
     {canUpload && <OnlineDocxEditor manuscriptId={item.manuscript_id} token={token} stage="initial" onUseSaved={(selected, version) => { setFile(selected); setOnlineVersion(version); }} onDirtyChange={dirty => onOnlineDirtyChange?.(`docx-initial-${item.manuscript_id}`, dirty)} />}
     {canUpload && <form onSubmit={upload} className="initial-editing-form"><h4>Upload initial-editing document</h4>
@@ -75,12 +78,27 @@ export default function InitialEditingPanel({ role, token, onChanged, manuscript
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const scope = useRef({ token, manuscriptId });
+  const requestVersion = useRef(0);
+  const [itemsScope, setItemsScope] = useState(null);
+  if (scope.current.token !== token || scope.current.manuscriptId !== manuscriptId) {
+    scope.current = { token, manuscriptId };
+    requestVersion.current += 1;
+  }
   const load = useCallback(async () => {
-    const response = await fetch(`${API_URL}/eic/initial-editing/my`, { headers: { Authorization: `Bearer ${token}` } });
-    if (!response.ok) throw new Error(`Could not load initial editing (${response.status}).`);
-    setItems(await response.json());
-  }, [token]);
-  useEffect(() => { load().catch(e => setError(e.message)); }, [load]);
+    const requestScope = scope.current;
+    const version = ++requestVersion.current;
+    const current = () => scope.current === requestScope && requestVersion.current === version;
+    try {
+      const response = await fetch(`${API_URL}/eic/initial-editing/my`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new Error(`Could not load initial editing (${response.status}).`);
+      const data = await response.json();
+      if (!current()) return false;
+      setItems(data); setItemsScope(requestScope);
+      return true;
+    } catch (error) { if (current()) throw error; return false; }
+  }, [token, manuscriptId]);
+  useEffect(() => { setError(""); setMessage(""); load().catch(e => setError(e.message)); return () => { requestVersion.current += 1; }; }, [load]);
   useReturnRefresh(() => load().catch(e => setError(e.message)), busy || dirty);
   const perform = async (path, data) => {
     setBusy(true); setError(""); setMessage("");
@@ -106,7 +124,8 @@ export default function InitialEditingPanel({ role, token, onChanged, manuscript
       const link = document.createElement("a"); link.href = url; link.download = filename; link.click(); URL.revokeObjectURL(url);
     } catch (e) { setError(e.message); }
   };
-  const visibleItems = manuscriptId == null ? items : items.filter(item => item.manuscript_id === manuscriptId);
+  const safeItems = itemsScope === scope.current ? items : [];
+  const visibleItems = manuscriptId == null ? safeItems : safeItems.filter(item => item.manuscript_id === manuscriptId);
   if (!visibleItems.length && !error && !message) return null;
   return <section className="initial-editing-panel" aria-label="Initial editing workflow" onChangeCapture={() => setDirty(true)}><div className="initial-editing-heading"><h2>Initial editing workflow</h2></div>
     {error && <p role="alert">{error}</p>}{message && <p role="status">{message}</p>}

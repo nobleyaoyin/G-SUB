@@ -187,8 +187,25 @@ class ReviewerDownloadsTest(unittest.TestCase):
         path.write_bytes(data)
         return relative
 
+    def activate_reviewer(self, reviewer):
+        if self.db.get(models.AccountLifecycle, reviewer.user_id):
+            return
+        event_id = f'synthetic-active-{reviewer.user_id}'
+        self.db.add(models.AccountLifecycleEvent(
+            event_id=event_id, user_id=reviewer.user_id, sequence=1,
+            from_state=None, to_state='active', auth_generation=1,
+            actor_user_id=self.editor.user_id,
+            occurred_at='2026-01-01T00:00:00.000000Z', reason_code='initial_enrollment'))
+        self.db.flush()
+        self.db.add(models.AccountLifecycle(
+            user_id=reviewer.user_id, state='active', sequence=1,
+            auth_generation=1, last_event_id=event_id))
+        self.db.flush()
+
     def select_single_blind_policy(self):
         """Select the current policy through the authenticated EIC workflow."""
+        for reviewer in (self.reviewer, self.other):
+            self.activate_reviewer(reviewer)
         chief = models.User(name="Policy EIC", email="policy-eic@example.com", password_hash="x", role="eic")
         self.db.add(chief)
         self.db.commit()
@@ -269,6 +286,9 @@ class ReviewerDownloadsTest(unittest.TestCase):
         assignment.status = "completed"
         self.db.commit()
         self.current = self.reviewer
+        self.assertEqual(self.client.get(f"/assignments/{assignment_id}/download").status_code, 409)
+        assignment.status = "assigned"
+        self.db.commit()
         self.assertEqual(self.client.get(f"/assignments/{assignment_id}/download").status_code, 200)
         (self.root / self.pdf).unlink()
         self.assertEqual(self.client.get(f"/assignments/{assignment_id}/download").status_code, 409)

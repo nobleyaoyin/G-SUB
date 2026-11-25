@@ -21,7 +21,7 @@ it("searches, offers accessible single selection and submits the selected review
   const fetch = mockFetch(); vi.stubGlobal("fetch", fetch);
   const user = userEvent.setup();
   render(<ReviewerInvitationPanel manuscriptId={4} round={1} status="ready_for_peer_review" token="synthetic" />);
-  await user.type(screen.getByLabelText("Search reviewers by name or email"), "reviewer");
+  await user.type(screen.getByLabelText("Search reviewers by name, email or institution"), "reviewer");
   const select = await screen.findByLabelText("Reviewer");
   const option = await screen.findByRole("option", { name: /Synthetic Reviewer/ });
   expect(option.value).toBe("5");
@@ -44,7 +44,7 @@ it("searches, offers accessible single selection and submits the selected review
 it("shows empty search results without offering an invitation", async () => {
   vi.stubGlobal("fetch", mockFetch({ empty: true }));
   const user = userEvent.setup(); render(<ReviewerInvitationPanel manuscriptId={4} round={1} status="revised" token="synthetic" />);
-  await user.type(screen.getByLabelText("Search reviewers by name or email"), "none");
+  await user.type(screen.getByLabelText("Search reviewers by name, email or institution"), "none");
   expect(await screen.findByText("No matching reviewers.")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Invite reviewer" }).disabled).toBe(true);
 });
@@ -52,7 +52,7 @@ it("shows empty search results without offering an invitation", async () => {
 it("does not imply missing profiles were deliberately omitted", async () => {
   vi.stubGlobal("fetch", mockFetch({ missing: true }));
   const user = userEvent.setup(); render(<ReviewerInvitationPanel manuscriptId={4} round={1} status="revised" token="synthetic" />);
-  await user.type(screen.getByLabelText("Search reviewers by name or email"), "reviewer");
+  await user.type(screen.getByLabelText("Search reviewers by name, email or institution"), "reviewer");
   await screen.findByRole("option", { name: /Synthetic Reviewer/ });
   await user.selectOptions(screen.getByLabelText("Reviewer"), "5");
   expect(screen.getAllByText(/not provided or unavailable/i).length).toBeGreaterThan(0);
@@ -62,7 +62,7 @@ it("does not imply missing profiles were deliberately omitted", async () => {
 it("preserves a confirmed duplicate rejection", async () => {
   vi.stubGlobal("fetch", mockFetch({ reject: true }));
   const user = userEvent.setup(); render(<ReviewerInvitationPanel manuscriptId={4} round={1} status="revised" token="synthetic" />);
-  await user.type(screen.getByLabelText("Search reviewers by name or email"), "reviewer");
+  await user.type(screen.getByLabelText("Search reviewers by name, email or institution"), "reviewer");
   const select = await screen.findByLabelText("Reviewer");
   await screen.findByRole("option", { name: /Synthetic Reviewer/ });
   await user.selectOptions(select, "5"); await user.click(screen.getByRole("button", { name: "Invite reviewer" }));
@@ -73,7 +73,7 @@ it("uses the guarded additional-reviewer action for a split", async () => {
   const fetch = mockFetch(); vi.stubGlobal("fetch", fetch);
   const user = userEvent.setup();
   render(<ReviewerInvitationPanel manuscriptId={4} round={1} status="revised" token="synthetic" splitReview={{ classification: "split", can_invite_additional: true }} />);
-  await user.type(screen.getByLabelText("Search reviewers by name or email"), "reviewer");
+  await user.type(screen.getByLabelText("Search reviewers by name, email or institution"), "reviewer");
   await screen.findByRole("option", { name: /Synthetic Reviewer/ });
   await user.selectOptions(screen.getByLabelText("Reviewer"), "5");
   await user.click(screen.getByRole("button", { name: "Invite additional reviewer" }));

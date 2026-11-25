@@ -1,0 +1,6 @@
+.stage-filter-select, .stage-filter-clear { box-sizing: border-box; min-height: 42px; min-width: 0; border: 1px solid var(--control-border, #cbd5e1); border-radius: 8px; background: var(--surface, #fff); color: var(--text-primary, #172033); font: inherit; padding: 8px 10px; }
+.stage-filter-select { width: 100%; padding-inline-end: 2rem; }
+.stage-filter-clear { display: inline-flex; align-items: center; justify-content: center; cursor: pointer; font-weight: 600; border-color: #1745b4; background: #1745b4; color: #fff; }
+.stage-filter-clear:hover { background: #12358b; }
+.stage-filter-select:focus-visible, .stage-filter-clear:focus-visible { outline: 3px solid var(--action-primary, #2563eb); outline-offset: 2px; }
+.stage-filter-select:disabled { opacity: .65; cursor: not-allowed; }

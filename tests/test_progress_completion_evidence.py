@@ -18,7 +18,21 @@ class ProgressEvidenceTests(unittest.TestCase):
         f=self.f;f.manuscript.status='draft';f.db.commit();s=self.states()
         self.assertEqual(s['Submission'],'current');self.assertEqual(s['Initial Screening'],'pending')
         f.manuscript.status='submitted';f.db.commit();s=self.states()
-        self.assertEqual(s['Submission'],'completed');self.assertEqual(s['Initial Screening'],'current')
+        # A legacy status without a submission record is not proof of completion.
+        self.assertEqual(s['Submission'],'unknown');self.assertEqual(s['Initial Screening'],'current')
+
+    def test_actual_submission_records_authoritative_completion(self):
+        f=self.f
+        created=f.client.post('/manuscripts/',json={'title':'Synthetic submission','abstract':'Synthetic abstract'})
+        self.assertEqual(created.status_code,201,created.text);mid=created.json()['manuscript_id']
+        upload=f.client.post(f'/manuscripts/{mid}/upload',files={'file':('source.txt',b'Synthetic source','text/plain')})
+        self.assertEqual(upload.status_code,200,upload.text)
+        result=f.client.post(f'/manuscripts/{mid}/submit');self.assertEqual(result.status_code,200,result.text)
+        response=f.client.get(f'/manuscripts/{mid}/progress');self.assertEqual(response.status_code,200,response.text)
+        stages={item['name']:item['state'] for item in response.json()['stages']}
+        self.assertEqual(stages['Submission'],'completed');self.assertEqual(stages['Initial Screening'],'current')
+        milestone=next(item for item in response.json()['stages'] if item['name']=='Submission')['steps'][0]
+        self.assertEqual(milestone,{'name':'Submission recorded','state':'completed'})
 
     def test_missing_history_is_not_inferred_from_publication(self):
         f=self.f;f.manuscript.status='published';f.db.commit();s=self.states()

@@ -13,8 +13,8 @@ it('separates review rounds without exposing identities or review comments', () 
   render(<EICStageHistory stage="Peer Review" overview={overview} />);
   expect(screen.getByRole('heading',{name:'Round 1'})).toBeTruthy();
   expect(screen.getByRole('heading',{name:'Round 2 · current round'})).toBeTruthy();
-  expect(screen.getByText(/Invitation: accepted · Assignment: completed/)).toBeTruthy();
-  expect(screen.getByText(/Invitation: pending · Assignment: assigned/)).toBeTruthy();
+  expect(screen.getByText(/Invitation: Accepted · Assignment: Completed/)).toBeTruthy();
+  expect(screen.getByText(/Invitation: Pending · Assignment: Assigned/)).toBeTruthy();
   expect(screen.queryByText('Private reviewer')).toBeNull();
   expect(screen.queryByText('Confidential review')).toBeNull();
 });
@@ -24,7 +24,7 @@ it('distinguishes missing history, empty history and agreement response', () => 
   expect(screen.getByText('History information is unavailable.')).toBeTruthy();
   expect(screen.getByText('No initial editing submissions are listed.')).toBeTruthy();
   rerender(<EICStageHistory stage="Author Agreement" overview={{...base,author_agreement:{status:'accepted',agreement_version:'v1',responded_at:'2026-01-01T12:00:00Z'}}} />);
-  expect(screen.getByText(/Agreement: accepted · Version: v1/)).toBeTruthy();
+  expect(screen.getByText(/Agreement: Accepted · Version: v1/)).toBeTruthy();
   rerender(<EICStageHistory stage="Author Agreement" overview={base} />);
   expect(screen.getByText('Agreement record is unavailable or has not been created.')).toBeTruthy();
 });

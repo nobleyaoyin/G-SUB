@@ -1,0 +1,6 @@
+.lifecycle-admin input,.lifecycle-admin textarea {display:block;width:100%;max-width:32rem;padding:.5rem;border:1px solid #a8b5c5;border-radius:5px;color:#17263c;background:white}
+.lifecycle-admin button {margin:.4rem .4rem .4rem 0;padding:.5rem .8rem;border:1px solid #285eaa;border-radius:5px;color:#174681;background:white;font-weight:600;cursor:pointer}
+.lifecycle-admin button:disabled {opacity:.5;cursor:not-allowed}
+.lifecycle-admin :is(input,textarea,button):focus-visible {outline:3px solid #2875d2;outline-offset:2px}
+.lifecycle-admin .lifecycle-user {display:block;max-width:100%;text-align:left;overflow-wrap:anywhere}
+.lifecycle-admin article {padding:.5rem;border-left:3px solid #b6c8df;margin:.5rem 0}

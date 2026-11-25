@@ -1,8 +1,17 @@
 // Existing EIC overview records only. No comment text or reviewer identity.
-const label = value => typeof value === 'string' && value ? value.replaceAll('_', ' ') : 'unavailable';
+import {workflowStageLabel, workflowStatusLabel} from './workflowStatus';
+const label = value => value ? workflowStatusLabel(value) : 'Unavailable';
 const date = value => {
   const ms = value ? Date.parse(value) : NaN;
   return Number.isFinite(ms) ? ms : null;
+};
+const stages = {
+  manuscript: 'Submission', submission: 'Submission', 'initial-resubmission': 'Initial Screening',
+  'author-revision': 'Revision', scan: 'Initial Screening', 'initial-invitation': 'Initial Editing',
+  'initial-response': 'Initial Editing', 'initial-submission': 'Initial Editing', confirmation: 'Initial Editing',
+  assignment: 'Peer Review', review: 'Peer Review', decision: 'EIC Decision', agreement: 'Author Agreement',
+  'final-invitation': 'Final Editing', 'final-response': 'Final Editing', 'final-submission': 'Final Editing',
+  'formatting-submission': 'Formatting', publication: 'Publication', distribution: 'Document Distribution', revocation: 'Document Distribution',
 };
 
 export function eicActivity(overview, formatting = null, distribution = null) {
@@ -12,10 +21,15 @@ export function eicActivity(overview, formatting = null, distribution = null) {
     const key = `${kind}:${id}`;
     if (ids.has(key)) return;
     ids.add(key);
-    events.push({key, timestamp, text, download});
+    events.push({key, stage: stages[kind], timestamp, text, download});
   };
   const each = (name, fn) => (Array.isArray(overview[name]) ? overview[name] : []).forEach(fn);
   if (overview.manuscript?.created_at) add('manuscript', overview.manuscript.manuscript_id, overview.manuscript.created_at, 'Manuscript created');
+  each('submission_events', (event,i) => {
+    if (event.kind === 'submitted') add('submission', event.id ?? i, event.created_at, 'Manuscript submitted');
+    if (event.kind === 'initial_resubmission') add('initial-resubmission', event.id ?? i, event.created_at, 'Manuscript resubmitted for initial screening');
+  });
+  each('revision_events', (event,i) => add('author-revision', event.round_file_id ?? i, event.created_at, `Revised manuscript submitted · Round ${event.review_round ?? 'unavailable'}`));
   each('scans', (s,i) => add('scan', s.scan_id ?? i, s.created_at, `Initial screening: ${label(s.decision)}`));
   each('invitations', (v,i) => {
     add('initial-invitation', v.invitation_id ?? i, v.invited_at, `Initial editor invitation #${v.invitation_id ?? 'unavailable'} · Editor: ${v.editor || 'unavailable'} · Status: ${label(v.status)}`);
@@ -24,7 +38,7 @@ export function eicActivity(overview, formatting = null, distribution = null) {
   each('submissions', (v,i) => add('initial-submission', v.submission_id ?? i, v.created_at, `Initial editing submission #${v.submission_id ?? 'unavailable'} · Editor: ${v.editor || 'unavailable'} · Status: ${label(v.status)}`, Number.isInteger(v.submission_id) ? `/eic/initial-editing/submissions/${v.submission_id}/download` : null));
   each('confirmations', (v,i) => add('confirmation', v.confirmation_id ?? i, v.confirmed_at, `Author confirmation for submission #${v.submission_id ?? 'unavailable'}: ${label(v.decision)}`));
   each('assignments', (v,i) => {
-    add('assignment', v.assignment_id ?? i, null, `Reviewer assignment #${v.assignment_id ?? 'unavailable'} · Round ${v.review_round ?? 'unavailable'} · Invitation: ${label(v.invitation_status)} · Assignment: ${label(v.status)} · Assigned by: ${v.assigned_by || 'unavailable'}`);
+    add('assignment', v.assignment_id ?? i, v.assigned_at, `Reviewer assignment #${v.assignment_id ?? 'unavailable'} · Round ${v.review_round ?? 'unavailable'} · Invitation: ${label(v.invitation_status)} · Assignment: ${label(v.status)} · Assigned by: ${v.assigned_by || 'unavailable'}`);
     if (v.review) add('review', v.assignment_id ?? i, v.review.submitted_at, `Review submitted · Round ${v.review_round ?? 'unavailable'}`);
   });
   each('decisions', (v,i) => add('decision', v.decision_id ?? i, v.decided_at, `EIC decision · Round ${v.review_round ?? 'unavailable'}: ${label(v.decision)}`));
@@ -61,7 +75,7 @@ export default function EICActivityHistory({overview, formatting, distribution, 
       {!Array.isArray(distribution) && <p>Distribution history is unavailable in this view.</p>}
       {incomplete && <p>Some activity records are unavailable.</p>}
       {!events.length ? <p>No activity records are available.</p> : <ol>{events.map(event => <li className="eic-history-item" key={event.key}>
-        <span>{event.text}</span>{date(event.timestamp) === null ? <small>Date unavailable</small> : <time dateTime={event.timestamp}>{new Date(event.timestamp).toLocaleString()}</time>}
+        <strong>{workflowStageLabel(event.stage)}</strong><span>{event.text}</span>{date(event.timestamp) === null ? <small>Date unavailable</small> : <time dateTime={event.timestamp}>{new Date(event.timestamp).toLocaleString()}</time>}
         {event.download && <button type="button" onClick={() => onDownload(event.download)}>Download {event.key.startsWith('initial-') ? 'initial' : 'final'} editing document</button>}
       </li>)}</ol>}
     </div>

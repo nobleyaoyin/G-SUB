@@ -18,6 +18,7 @@ from app.models import (
     FormatterInvitation,
 )
 from app.routers.users import get_current_user
+from app.editor_invitation_revocation import effective_status
 
 
 router = APIRouter(
@@ -42,21 +43,27 @@ class GeneralCommentResponse(BaseModel):
 
 def _has_accepted_invitation(db, model, user_column, manuscript_id, user_id):
     statement = (
-        select(model.invitation_id)
+        select(model)
         .where(
             model.manuscript_id == manuscript_id,
             user_column == user_id,
             model.status == "accepted",
         )
-        .limit(1)
     )
-    return db.scalar(statement) is not None
+    for invitation in db.scalars(statement):
+        if model is InitialEditorInvitation:
+            if effective_status(db, 'initial', invitation) == 'accepted':return True
+        elif model is FinalEditorInvitation:
+            if effective_status(db, 'final', invitation) == 'accepted':return True
+        else:
+            return True
+    return False
 
 
 def _require_staff_access(db: Session, manuscript_id: int, user: User):
     manuscript = db.get(Manuscript, manuscript_id)
 
-    if manuscript is None:
+    if manuscript is None or manuscript.status == "draft":
         raise HTTPException(status_code=404, detail="Manuscript not found")
 
     # EIC can access staff comments across manuscripts.

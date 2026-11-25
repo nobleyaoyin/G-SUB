@@ -44,3 +44,33 @@ it.each(["author", "editor", "eic", "reviewer", "formatter"])("returns %s to its
   expect(screen.getByText("Manuscript A")).toBeTruthy();
   expect(screen.queryByText("Manuscript B")).toBeNull();
 });
+
+it('focuses the returned list and repeated clean navigation does not reconfirm', async () => {
+  sessionStorage.setItem('access_token','synthetic');
+  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,headers:new Headers({'content-type':'application/json'}),json:async()=>({name:'Synthetic',role:'author'})})));
+  const confirm=vi.spyOn(window,'confirm');
+  render(<App />);
+  fireEvent.click(await screen.findByRole('button',{name:'Open A'}));
+  const nav=screen.getByLabelText('Main navigation');
+  const back=within(nav).getByRole('button',{name:'Manuscripts'});
+  fireEvent.click(back);
+  const list=(await screen.findByRole('button',{name:'Open A'})).closest('[data-sidebar-target="manuscripts"]');
+  await vi.waitFor(()=>expect(document.activeElement).toBe(list));
+  fireEvent.click(back);
+  expect(confirm).not.toHaveBeenCalled();
+  expect(screen.getByRole('button',{name:'Open A'})).toBeTruthy();
+});
+
+it.each(["author", "editor", "eic", "reviewer", "formatter"])("returns %s to its dashboard only after unsaved changes are confirmed", async role => {
+  sessionStorage.setItem("access_token", "synthetic");
+  vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, headers: new Headers({ "content-type": "application/json" }), json: async () => ({ name: "Synthetic", role }) })));
+  vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Open A" }));
+  fireEvent.change(screen.getByLabelText("Draft"), { target: { value: "unsaved" } });
+  const dashboard=within(screen.getByLabelText("Main navigation")).getByRole("button", { name: "Dashboard" });
+  fireEvent.click(dashboard);
+  expect(screen.getByRole("heading", { name: "Manuscript A" })).toBeTruthy();
+  fireEvent.click(dashboard);
+  expect(await screen.findByRole("button", { name: "Open A" })).toBeTruthy();
+});

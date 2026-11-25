@@ -1,9 +1,10 @@
+import {workflowStatusLabel} from './workflowStatus';
 import useReturnRefresh from "./useReturnRefresh";
 import { useCallback, useEffect, useState } from "react";
 import { API_URL, actionFailureMessage, submitAction } from "./api";
 import "./ReviewerInvitationPanel.css";
 
-export default function ReviewerInvitationPanel({ manuscriptId, round, status, token, onChanged, invitationPath = "/assignments/", artifactBinding = false, splitReview }) {
+export default function ReviewerInvitationPanel({ manuscriptId, round, status, token, onChanged, invitationPath = "/assignments/", artifactBinding = false, splitReview, allowBrowse = false }) {
   const [assignments, setAssignments] = useState([]);
   const [progress, setProgress] = useState(null);
   const [reviewerId, setReviewerId] = useState("");
@@ -30,24 +31,33 @@ export default function ReviewerInvitationPanel({ manuscriptId, round, status, t
     const controller = new AbortController();
     const term = query.trim();
     setReviewers([]); setReviewerId("");
-    if (term.length < 2 || !["ready_for_peer_review", "revised"].includes(status)) {
+    if ((!term && !allowBrowse) || (term.length > 0 && term.length < 2) || !["ready_for_peer_review", "revised"].includes(status)) {
       setSearchState("idle");
       return () => controller.abort();
     }
     setSearchState("loading");
     const timer = setTimeout(async () => {
       try {
-        const response = await fetch(`${API_URL}/assignments/manuscript/${manuscriptId}/reviewer-directory?q=${encodeURIComponent(term)}`, { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal });
-        if (!response.ok) throw new Error("Search unavailable");
-        const data = await response.json();
-        if (!Array.isArray(data)) throw new Error("Invalid search response");
-        if (!controller.signal.aborted) { setReviewers(data); setSearchState("ready"); }
+        const all = [], seen = new Set();
+        for (let offset = 0; offset <= 100000; offset += 20) {
+          const response = await fetch(`${API_URL}/assignments/manuscript/${manuscriptId}/reviewer-directory?${new URLSearchParams({ ...(term ? { q: term } : {}), offset: String(offset) })}`, { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal });
+          if (!response.ok) throw new Error("Search unavailable");
+          const data = await response.json();
+          if (!Array.isArray(data) || data.length > 20) throw new Error("Invalid search response");
+          for (const reviewer of data) {
+            if (!reviewer || seen.has(reviewer.reviewer_id)) throw new Error("Incomplete reviewer directory");
+            seen.add(reviewer.reviewer_id); all.push(reviewer);
+          }
+          if (data.length < 20) break;
+          if (offset === 100000) throw new Error("Incomplete reviewer directory");
+        }
+        if (!controller.signal.aborted) { setReviewers(all); setSearchState("ready"); }
       } catch {
         if (!controller.signal.aborted) { setReviewers([]); setSearchState("error"); }
       }
     }, 250);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [query, manuscriptId, round, status, token, searchVersion]);
+  }, [query, manuscriptId, round, status, token, searchVersion, allowBrowse]);
   useReturnRefresh(() => load().then(() => { setNeedsRefresh(false); setError(""); setSearchVersion(value => value + 1); }).catch(e => setError(e.message)), busy);
   const invite = async event => {
     event.preventDefault(); if (busy || needsRefresh || !reviewers.some(r => String(r.reviewer_id) === reviewerId && r.selectable)) return;
@@ -69,7 +79,7 @@ export default function ReviewerInvitationPanel({ manuscriptId, round, status, t
     if (busy || needsRefresh) return;
     setBusy(true); setError(""); setMessage("");
     try {
-      await submitAction(`${API_URL}/assignments/review-invitations/${assignmentId}/bind-artifact`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+      await submitAction(`${API_URL}/assignments/demo-invitations/${assignmentId}/bind-artifact`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
       setMessage("Reviewer document bound.");
       try { await load(); } catch { setNeedsRefresh(true); setError("Binding saved, but refresh failed. Return to this view to check before retrying."); }
     } catch (e) { setError(actionFailureMessage(e)); if (!e.confirmedRejection) setNeedsRefresh(true); }
@@ -95,7 +105,7 @@ export default function ReviewerInvitationPanel({ manuscriptId, round, status, t
 
         {progress && (
           <div className="reviewer-summary-card">
-            <span>Decision Progress</span>
+            <span>Decision progress</span>
             <strong>
               {Math.min(progress.completed_distinct, progress.required)}/{progress.required}
             </strong>
@@ -139,7 +149,7 @@ export default function ReviewerInvitationPanel({ manuscriptId, round, status, t
                   </div>
                   <div>
                     <strong>Reviewer #{a.reviewer_id}</strong>
-                    <p>Review Round {a.review_round}</p>
+                    <p>Review round {a.review_round}</p>
                   </div>
                 </div>
 
@@ -147,7 +157,7 @@ export default function ReviewerInvitationPanel({ manuscriptId, round, status, t
                   <span className={`reviewer-status invitation-${a.invitation_status}`}>
                     {a.invitation_status === "legacy"
                       ? "Existing assignment"
-                      : a.invitation_status}
+                      : workflowStatusLabel(a.invitation_status)}
                   </span>
                   <span className={`reviewer-status review-${a.status}`}>
                     {a.status === "completed"
@@ -194,20 +204,20 @@ export default function ReviewerInvitationPanel({ manuscriptId, round, status, t
 
             <form className="reviewer-directory-form" onSubmit={invite}>
               <label>
-                Search reviewers by name or email
+                Search reviewers by name, email or institution
                 <input
                   type="search"
                   maxLength={100}
                   value={query}
                   onChange={e => setQuery(e.target.value)}
                   autoComplete="off"
-                  placeholder="Enter reviewer name or email..."
+                  placeholder="Enter reviewer name, email or institution..."
                 />
               </label>
 
               <p className="reviewer-search-feedback" aria-live="polite">
                 {searchState === "idle"
-                  ? "Enter at least two characters to search."
+                  ? allowBrowse ? "Enter at least two characters to search, or clear the field to browse." : "Enter at least two characters to search."
                   : searchState === "loading"
                     ? "Searching reviewers…"
                     : searchState === "error"
@@ -235,7 +245,7 @@ export default function ReviewerInvitationPanel({ manuscriptId, round, status, t
                       {[r.name, r.profile?.professional_title, r.profile?.institution, r.email]
                         .filter(Boolean).join(" — ")}
                       {r.invitation_status
-                        ? ` · ${r.invitation_status} / ${r.assignment_status}`
+                        ? ` · ${workflowStatusLabel(r.invitation_status)} / ${workflowStatusLabel(r.assignment_status)}`
                         : ""}
                     </option>
                   ))}

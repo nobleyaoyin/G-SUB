@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
@@ -34,7 +34,8 @@ def api_factory(monkeypatch):
         tables = [models.User, models.Manuscript, models.ReviewAssignment, models.ReviewerInvitation,
                   models.ReviewerInvitationInvalidation, models.InitialEditorInvitation, models.FinalEditorInvitation,
                   models.ManuscriptReviewPolicy, models.EICInitialScan, models.InitialEditingSubmission,
-                  models.PreReviewConfirmation, models.ReviewRoundFile, models.ReviewAssignmentFile]
+                  models.PreReviewConfirmation, models.ReviewRoundFile, models.ReviewAssignmentFile,
+                  models.AccountLifecycleEvent, models.AccountLifecycle]
         Base.metadata.create_all(engine, tables=[item.__table__ for item in tables])
         with engine.begin() as connection:
             connection.exec_driver_sql('CREATE TABLE schema_migrations (migration_id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)')
@@ -47,6 +48,17 @@ def api_factory(monkeypatch):
                         for i, name, role in [(1, 'Author', 'author'), (2, 'Reviewer', 'reviewer'),
                                               (3, 'Editor', 'editor'), (4, 'EIC', 'eic'), (5, 'Other', 'reviewer')]])
             db.commit()
+        with engine.begin() as connection:
+            for uid in (2, 5):
+                event_id = f'synthetic-active-{uid}'
+                connection.exec_driver_sql(
+                    'INSERT INTO account_lifecycle_events VALUES (?,?,?,?,?,?,?,?,?)',
+                    (event_id, uid, 1, None, 'active', 1, 4,
+                     '2026-01-01T00:00:00.000000Z', 'initial_enrollment'))
+                connection.exec_driver_sql(
+                    'INSERT INTO account_lifecycle VALUES (?,?,?,?,?)',
+                    (uid, 'active', 1, 1, event_id))
+        with Session(engine) as db:
             db.add(models.Manuscript(manuscript_id=1, author_id=1, title='Identifying synthetic title',
                                      abstract='Private synthetic abstract', status='ready_for_peer_review',
                                      review_round=1, created_at=now))
@@ -85,9 +97,8 @@ def api_factory(monkeypatch):
         def session_override():
             with Session(engine) as db:
                 yield db
-        def user_override():
-            with Session(engine) as db:
-                return db.get(models.User, actor['id'])
+        def user_override(db: Session = Depends(get_db)):
+            return db.get(models.User, actor['id'])
         app.dependency_overrides[get_db] = session_override
         app.dependency_overrides[get_current_user] = user_override
         client = TestClient(app)
@@ -123,7 +134,10 @@ def test_reviewer_progress_and_assignment_are_neutral_in_all_policy_states(api_f
     progress = client.get('/manuscripts/1/progress')
     assert progress.status_code == 200
     assert progress.headers['cache-control'] == 'no-store'
-    assert set(progress.json()) == {'manuscript_id', 'status', 'review_round', 'current_stage', 'next_action', 'stages'}
+    assert set(progress.json()) == {'manuscript_id', 'status', 'review_round', 'current_stage', 'next_action', 'stages', 'participant_task'}
+    task = progress.json()['participant_task']
+    assert set(task) == {'task_state', 'task_message', 'relevant_stage', 'action_label', 'permitted_action_target'}
+    assert 'Identifying synthetic title' not in str(task) and 'author_id' not in str(task)
     assert progress.json()['current_stage'] == 'Peer Review'
     assert all(set(stage) == {'name', 'state'} for stage in progress.json()['stages'])
     assert 'Identifying synthetic title' not in progress.text and 'author_id' not in progress.text
@@ -184,7 +198,7 @@ def test_author_editor_and_eic_retain_detail_and_progress_metadata(api_factory, 
     assert detail.json()['title'] == 'Identifying synthetic title'
     progress = client.get('/manuscripts/1/progress')
     assert progress.status_code == 200 and progress.json()['title'] == 'Identifying synthetic title'
-    assert set(progress.json()) == {'manuscript_id', 'title', 'status', 'review_round', 'current_stage', 'next_action', 'stages'}
+    assert set(progress.json()) == {'manuscript_id', 'title', 'status', 'review_round', 'current_stage', 'next_action', 'stages', 'participant_task'}
     if actor_id in (1, 4):
         initial = next(stage for stage in progress.json()['stages'] if stage['name'] == 'Initial Editing')
         assert len(initial['steps']) == 6

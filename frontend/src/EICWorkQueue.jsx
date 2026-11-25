@@ -1,4 +1,5 @@
 import { statusLabel, statusValue } from './eicManuscriptList';
+import { recordedMessage } from './recordedDisplay';
 
 const groups = [
   ['Screening', ['submitted']],
@@ -34,16 +35,21 @@ export default function EICWorkQueue({items, state, onOpen, unread, onOpenNotifi
       {unread?.state === 'ready' ? <span>{unread.count} unread</span> : unread?.state === 'error' ? <span>Notifications unavailable</span> : <span>Loading notifications…</span>}
       <button type="button" onClick={onOpenNotifications}>Open notifications</button>
     </div>
+    {unread?.state === 'ready' && (unread.recent?.length ? <ul className="eic-queue-notifications" aria-label="Recent notifications">
+      {unread.recent.map(notification => <li key={notification.notification_id}>
+        <div className="eic-queue-notification-text"><span>{notification.is_read ? 'Read:' : 'Unread:'}</span><p>{recordedMessage(notification.message)}</p></div>
+        <button type="button" className={notification.manuscript_id ? 'manuscript-open-button' : undefined} aria-label={recordedMessage(notification.message)} onClick={() => notification.manuscript_id ? onOpen(notification.manuscript_id) : onOpenNotifications()}>{notification.manuscript_id ? 'Open manuscript' : 'Open notifications'}</button>
+      </li>)}
+    </ul> : <p>No recent notifications.</p>)}
     {state === 'loading' ? <p role="status">Loading workflow groups…</p> : state === 'error' ? <div><p>Workflow groups are unavailable.</p><button type="button" onClick={onRetry}>Retry work queue</button></div> : !items.length ? <p>The work queue is empty.</p> : <>
       <p className="eic-queue-note">Waiting or action eligibility unconfirmed. No decision-ready count is inferred from status.</p>
-      {groupQueue(items).map(group => <section className="eic-queue-group" key={group.name}>
-        <h3>{group.name} <span>({group.items.length})</span></h3>
-        <ul>{group.items.slice(0,2).map(item => <li key={item.manuscript_id}>
+      {groupQueue(items).map(group => <details className="eic-queue-group" key={group.name} open>
+        <summary>{group.name} ({group.items.length})</summary>
+        <ul>{group.items.map(item => <li key={item.manuscript_id}>
           <button type="button" aria-label={`Open ${item.title || 'untitled manuscript'} (manuscript ${item.manuscript_id}) from work queue`} onClick={() => onOpen(item.manuscript_id)}>#{item.manuscript_id} {item.title || 'Title unavailable'}</button>
           <small>{statusLabel(statusValue(item))}</small>
         </li>)}</ul>
-        {group.items.length > 2 && <p>{group.items.length - 2} more in Manuscripts.</p>}
-      </section>)}
+      </details>)}
     </>}
   </section>;
 }

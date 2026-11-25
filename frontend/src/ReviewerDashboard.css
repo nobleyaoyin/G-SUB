@@ -2,7 +2,7 @@
 .reviewer-page {
   min-height: 100vh;
   background: #f1f5f9;
-  color: #0f172a;
+  color: var(--text-primary);
 }
 
 .reviewer-header {
@@ -11,7 +11,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--border-soft);
 }
 
 .reviewer-header h1 {
@@ -26,7 +26,7 @@
 
 .reviewer-logout {
   padding: 10px 18px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-subtle);
   background: white;
   border-radius: 8px;
   cursor: pointer;
@@ -37,6 +37,15 @@
   margin: 0 auto;
   padding: 40px 24px;
 }
+.reviewer-main.reviewer-main-list-layout { max-width: 1440px; padding: 28px 24px; }
+.reviewer-list-layout { grid-template-columns: minmax(0, 1fr) 250px; }
+.reviewer-list-layout .role-list-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 900px) {
+  .reviewer-list-layout { grid-template-columns: minmax(0, 1fr); grid-template-areas: "content" "statistics"; }
+  .reviewer-list-layout > .manuscripts-list-sidebar { position: static; }
+}
+@media (max-width: 600px) { .reviewer-list-layout .role-list-controls { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 600px) { .reviewer-main.reviewer-main-list-layout { padding: 24px 14px; } }
 
 .reviewer-main h2 {
   margin: 0 0 10px;
@@ -56,7 +65,7 @@
 
 .reviewer-stat-card {
   background: white;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-soft);
   border-radius: 12px;
   padding: 26px;
 }
@@ -73,7 +82,7 @@
 
 .reviewer-section {
   background: white;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-soft);
   border-radius: 12px;
   padding: 28px;
 }
@@ -90,15 +99,22 @@
 
 .reviewer-card {
   padding: 22px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-soft);
   border-radius: 10px;
 }
 
 .reviewer-card-top {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+
+.reviewer-card-top > h3 {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .reviewer-card h3 {
@@ -111,6 +127,11 @@
 }
 
 .reviewer-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  white-space: nowrap;
   padding: 6px 12px;
   border-radius: 20px;
   font-size: 12px;
@@ -119,24 +140,25 @@
 
 .reviewer-status.assigned {
   border: 1px solid var(--warning-accent);
-  background: #fef3c7;
+  background: var(--warning-surface);
   color: var(--warning-text);
 }
 
 .reviewer-status.completed {
-  background: #dcfce7;
-  color: #166534;
+  background: var(--success-surface);
+  color: var(--success-text);
 }
 
 .reviewer-download {
   background: white;
-  color: #334155;
-  border: 1px solid #cbd5e1;
+  color: var(--neutral-ink);
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
   padding: 10px 16px;
   cursor: pointer;
   margin-top: 8px;
 }
+.reviewer-profile-button { display: inline-flex; align-items: center; justify-content: center; margin: 0 0 16px; }
 
 .review-form {
   display: flex;
@@ -144,7 +166,7 @@
   gap: 12px;
   margin-top: 20px;
   padding-top: 20px;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--border-soft);
 }
 
 .review-form h4 {
@@ -153,7 +175,7 @@
 
 .review-form label {
   font-weight: 600;
-  color: #334155;
+  color: var(--neutral-ink);
 }
 
 .review-form textarea,
@@ -167,7 +189,7 @@
 
 .reviewer-submit {
   align-self: flex-start;
-  background: #2563eb;
+  background: var(--action-accent);
   color: white;
   border: none;
   border-radius: 8px;
@@ -239,13 +261,13 @@
   cursor: pointer;
   font-size: 18px;
   font-weight: 600;
-  color: #0f172a;
+  color: var(--text-primary);
   padding: 10px 0;
   list-style-position: inside;
 }
 
 .reviewer-collapsible > summary:hover {
-  color: #2563eb;
+  color: var(--action-accent);
 }
 
 .reviewer-stats-collapsible .reviewer-stats {
@@ -254,7 +276,7 @@
 }
 
 .reviewer-collapsible > summary:focus-visible {
-  outline: 2px solid #2563eb;
+  outline: 2px solid var(--action-accent);
   outline-offset: 4px;
   border-radius: 4px;
 }

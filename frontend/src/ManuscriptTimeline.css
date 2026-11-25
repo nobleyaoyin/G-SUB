@@ -1,0 +1,21 @@
+.manuscript-activity-timeline {
+  background: #f0fdfa;
+  border: 1px solid #99d7cc;
+  border-radius: 10px;
+  color: #134e4a;
+  padding: 12px 14px;
+}
+
+.manuscript-activity-timeline summary {
+  color: #115e59;
+  font-weight: 700;
+}
+
+.manuscript-activity-timeline ol {
+  padding-inline-start: 1.5rem;
+  margin-block: 0;
+}
+
+.manuscript-activity-timeline li + li {
+  margin-top: 8px;
+}

@@ -1,20 +1,100 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import EICDashboard from './EICDashboard';
-import { useEffect } from 'react';
+import { StrictMode, useEffect } from 'react';
 vi.mock('./NotificationBell', () => ({ default: () => null }));
 vi.mock('./FormattingPanel', () => ({ default: () => null }));
 vi.mock('./BlindReviewPanel', () => ({ default: () => null }));
-vi.mock('./ManuscriptProgress', () => ({ default: ({manuscriptId,onProgressChange}) => {
+vi.mock('./ManuscriptProgress', () => ({ default: ({manuscriptId,onProgressChange,onBrowseStage,selectedStage}) => {
   useEffect(() => {
-    const status = document.querySelector('.eic-status-badge')?.textContent?.trim();
-    const stage = ({submitted:'Initial Screening','initial scan passed':'Initial Editing',published:'Publication',formatting:'Formatting','ready for peer review':'Peer Review',revised:'Peer Review'})[status] || null;
-    onProgressChange?.({manuscript_id:manuscriptId,current_stage:stage,stages:stage ? [{name:stage,state:'current'}] : []});
+    const status = document.querySelector('.eic-status-badge')?.textContent?.trim().toLowerCase();
+    const stage = ({submitted:'Initial Screening','initial scan passed':'Initial Editing',published:'Publication',formatting:'Formatting','ready for peer review':'Peer Review','currently in review':'Peer Review',revised:'Peer Review'})[status] || null;
+    onProgressChange?.({manuscript_id:manuscriptId,review_round:1,current_stage:stage,stages:stage ? [{name:stage,state:'current'}] : []});
   },[manuscriptId,onProgressChange]);
-  return <div>Timeline #{manuscriptId}</div>;
+  const status = document.querySelector('.eic-status-badge')?.textContent?.trim().toLowerCase();
+  const current = ({submitted:'Initial Screening','initial scan passed':'Initial Editing',published:'Publication',formatting:'Formatting','ready for peer review':'Peer Review','currently in review':'Peer Review',revised:'Peer Review'})[status] || null;
+  return <nav aria-label="Manuscript stages">{['Submission','Initial Screening','Initial Editing','Peer Review','EIC Decision','Author Agreement','Final Editing','Formatting','Publication'].map(name => <button key={name} aria-current={current === name ? 'step' : undefined} aria-pressed={selectedStage === name} onClick={() => onBrowseStage(name)}>View {name} workspace</button>)}<span>Timeline #{manuscriptId}</span></nav>;
 } }));
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); sessionStorage.removeItem('gsub-eic-workspace-v1'); vi.unstubAllGlobals(); });
 const overview = id => ({ manuscript:{ manuscript_id:id,title:`Paper ${id}`,status:'submitted',author:'Synthetic',abstract:`Abstract ${id}`,review_round:1 }, review_progress:{can_decide:false}, decisions:[],submissions:[],final_invitations:[],final_workflow_submissions:[],scans:[],invitations:[],confirmations:[],assignments:[],author_agreement:null,final_submissions:[] });
+it('restores the selected stage after refresh using an authorized overview read', async () => {
+  vi.stubGlobal('fetch',vi.fn(async url => {
+    if(url.endsWith('/manuscripts/')) return {ok:true,json:async()=>[{manuscript_id:1,title:'Paper 1',status:'submitted'}]};
+    if(url.endsWith('/eic/editors')) return {ok:true,json:async()=>[]};
+    if(url.endsWith('/1/overview')) return {ok:true,json:async()=>overview(1)};
+    return {ok:false,json:async()=>({})};
+  }));
+  const props={user:{user_id:123,name:'Synthetic'},token:'synthetic'};
+  const first=render(<EICDashboard {...props} />);
+  fireEvent.click(await screen.findByRole('button',{name:/#1 Paper 1/}));
+  let nav=await screen.findByRole('navigation',{name:'Manuscript stages'});
+  const title=screen.getByRole('heading',{name:'Paper 1'});
+  const id=screen.getByText('Manuscript #1');
+  const abstract=screen.getByRole('region',{name:'Manuscript Abstract'});
+  expect(title.compareDocumentPosition(id) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(id.compareDocumentPosition(abstract) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(abstract.compareDocumentPosition(screen.getByText('Private Notes')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getAllByText('Abstract 1')).toHaveLength(1);
+  const sidebar=screen.getByLabelText('Manuscript statistics');
+  expect(sidebar.classList.contains('manuscripts-list-sidebar')).toBe(true);
+  expect(sidebar.parentElement.querySelector('.manuscripts-list-content').contains(nav)).toBe(true);
+  expect(screen.queryByText('Stage Threads')).toBeNull();
+  expect(screen.getByText('Private Notes')).toBeTruthy();
+  expect(screen.getByText('Comments (Staff Shared)')).toBeTruthy();
+  fireEvent.click(within(nav).getByRole('button',{name:/Publication/}));
+  await waitFor(()=>expect(JSON.parse(sessionStorage.getItem('gsub-eic-workspace-v1')).stage).toBe('Publication'));
+  first.unmount();
+  render(<StrictMode><EICDashboard {...props} /></StrictMode>);
+  nav=await screen.findByRole('navigation',{name:'Manuscript stages'});
+  await waitFor(()=>expect(within(nav).getByRole('button',{name:/Initial Screening/}).getAttribute('aria-current')).toBe('step'));
+  expect(within(nav).getByRole('button',{name:/Publication/}).getAttribute('aria-pressed')).toBe('true');
+  expect(fetch.mock.calls.filter(([url])=>url.endsWith('/1/overview')).length).toBeGreaterThanOrEqual(2);
+  expect(fetch.mock.calls.every(([,options])=>!options?.method || options.method==='GET')).toBe(true);
+});
+
+it('does not restore another account’s saved manuscript', async () => {
+  sessionStorage.setItem('gsub-eic-workspace-v1',JSON.stringify({userId:999,manuscriptId:1,stage:'Publication'}));
+  vi.stubGlobal('fetch',vi.fn(async url => url.endsWith('/manuscripts/') ? {ok:true,json:async()=>[]} : {ok:true,json:async()=>[]}));
+  render(<EICDashboard user={{user_id:123,name:'Synthetic'}} token="synthetic" />);
+  await screen.findByText('No accessible manuscripts are available.');
+  expect(fetch.mock.calls.some(([url])=>url.endsWith('/1/overview'))).toBe(false);
+});
+it('does not restore manuscript content when the new authorized read is denied', async () => {
+  sessionStorage.setItem('gsub-eic-workspace-v1',JSON.stringify({userId:123,manuscriptId:1,stage:'Publication'}));
+  vi.stubGlobal('fetch',vi.fn(async url => url.endsWith('/1/overview')
+    ? {ok:false,status:403,json:async()=>({detail:'Forbidden'})}
+    : {ok:true,json:async()=>[]}));
+  render(<EICDashboard user={{user_id:123,name:'Synthetic'}} token="synthetic" />);
+  expect((await screen.findByRole('alert')).textContent).toContain('Forbidden');
+  expect(screen.queryByText('Abstract 1')).toBeNull();
+  expect(screen.queryByRole('navigation',{name:'Manuscript stages'})).toBeNull();
+});
+it('browses stages through the same dirty guard without writing', async () => {
+  vi.stubGlobal('fetch',vi.fn(async url => {
+    if(url.endsWith('/manuscripts/')) return {ok:true,json:async()=>[{manuscript_id:1,title:'Paper 1',status:'submitted'}]};
+    if(url.endsWith('/eic/editors')) return {ok:true,json:async()=>[]};
+    if(url.endsWith('/1/overview')) return {ok:true,json:async()=>overview(1)};
+    return {ok:false,json:async()=>({})};
+  }));
+  vi.stubGlobal('confirm',vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true));
+  render(<EICDashboard user={{name:'Synthetic'}} token="synthetic" />);
+  fireEvent.click(await screen.findByRole('button',{name:/#1 Paper 1/}));
+  const nav=await screen.findByRole('navigation',{name:'Manuscript stages'});
+  await waitFor(()=>expect(within(nav).getByRole('button',{name:/Initial Screening/}).getAttribute('aria-current')).toBe('step'));
+  fireEvent.change(screen.getByRole('combobox',{name:'Decision'}),{target:{value:'pass'}});
+  fireEvent.click(within(nav).getByRole('button',{name:/Submission/}));
+  expect(within(nav).getByRole('button',{name:/Initial Screening/}).getAttribute('aria-pressed')).toBe('true');
+  expect(screen.getByRole('combobox',{name:'Decision'}).value).toBe('pass');
+  fireEvent.click(within(nav).getByRole('button',{name:/Submission/}));
+  expect(within(nav).getByRole('button',{name:/Submission/}).getAttribute('aria-pressed')).toBe('true');
+  expect(screen.queryByRole('button',{name:'Previous stage'})).toBeNull();
+  fireEvent.click(within(nav).getByRole('button',{name:/Initial Screening/}));
+  expect(within(nav).getByRole('button',{name:/Initial Screening/}).getAttribute('aria-pressed')).toBe('true');
+  expect(screen.getByRole('combobox',{name:'Decision'}).value).toBe('');
+  fireEvent.click(within(nav).getByRole('button',{name:/Publication/}));
+  expect(screen.queryByRole('button',{name:'Next stage'})).toBeNull();
+  expect(fetch.mock.calls.every(([,options])=>!options?.method || options.method==='GET')).toBe(true);
+});
 it('opens the current stage, browses nine stages without writes, and guards unsaved input', async () => {
   vi.stubGlobal('fetch',vi.fn(async url => {
     if(url.endsWith('/manuscripts/')) return {ok:true,json:async()=>[{manuscript_id:1,title:'Paper 1',status:'submitted'}]};
@@ -29,13 +109,46 @@ it('opens the current stage, browses nine stages without writes, and guards unsa
   await waitFor(()=>expect(within(nav).getByRole('button',{name:/Initial Screening/}).getAttribute('aria-current')).toBe('step'));
   expect(within(nav).getAllByRole('button')).toHaveLength(9);
   fireEvent.change(screen.getByRole('combobox',{name:'Decision'}),{target:{value:'pass'}});
+  const dirtyUnload = new Event('beforeunload', {cancelable:true});
+  window.dispatchEvent(dirtyUnload);
+  expect(dirtyUnload.defaultPrevented).toBe(true);
   fireEvent.click(within(nav).getByRole('button',{name:/Publication/}));
   expect(within(nav).getByRole('button',{name:/Initial Screening/}).getAttribute('aria-pressed')).toBe('true');
   expect(screen.getByRole('combobox',{name:'Decision'}).value).toBe('pass');
   fireEvent.click(within(nav).getByRole('button',{name:/Publication/}));
   expect(within(nav).getByRole('button',{name:/Publication/}).getAttribute('aria-pressed')).toBe('true');
   expect(screen.getByText('Publication record is unavailable.')).toBeTruthy();
+  fireEvent.click(within(nav).getByRole('button',{name:/Initial Screening/}));
+  expect(screen.getByRole('combobox',{name:'Decision'}).value).toBe('');
+  const cleanUnload = new Event('beforeunload', {cancelable:true});
+  window.dispatchEvent(cleanUnload);
+  expect(cleanUnload.defaultPrevented).toBe(false);
   expect(fetch.mock.calls.every(([,options])=>!options?.method || options.method==='GET')).toBe(true);
+});
+
+it('keeps a pending or rejected stage save on the same stage with input intact', async () => {
+  let finishSave;
+  vi.stubGlobal('confirm',vi.fn(()=>true));
+  vi.stubGlobal('fetch',vi.fn((url, options={}) => {
+    if(options.method === 'POST') return new Promise(resolve => { finishSave=resolve; });
+    if(url.endsWith('/manuscripts/')) return Promise.resolve({ok:true,json:async()=>[{manuscript_id:1,title:'Paper 1',status:'submitted'}]});
+    if(url.endsWith('/eic/editors')) return Promise.resolve({ok:true,json:async()=>[]});
+    if(url.endsWith('/1/overview')) return Promise.resolve({ok:true,json:async()=>overview(1)});
+    return Promise.resolve({ok:false,json:async()=>({})});
+  }));
+  render(<EICDashboard user={{name:'Synthetic'}} token="synthetic" />);
+  fireEvent.click(await screen.findByRole('button',{name:/#1 Paper 1/}));
+  const nav=await screen.findByRole('navigation',{name:'Manuscript stages'});
+  fireEvent.change(await screen.findByRole('combobox',{name:'Decision'}),{target:{value:'pass'}});
+  fireEvent.change(screen.getByRole('textbox',{name:'Comments'}),{target:{value:'Unsaved synthetic comment'}});
+  fireEvent.submit(screen.getByRole('button',{name:'Record screening'}).closest('form'));
+  await waitFor(()=>expect(finishSave).toBeTypeOf('function'));
+  fireEvent.click(within(nav).getByRole('button',{name:/Publication/}));
+  expect(within(nav).getByRole('button',{name:/Initial Screening/}).getAttribute('aria-pressed')).toBe('true');
+  expect(window.confirm).not.toHaveBeenCalled();
+  await act(async()=>finishSave({ok:false,status:400,json:async()=>({detail:'Synthetic rejection'})}));
+  expect(await screen.findByText('Action request rejected: Synthetic rejection')).toBeTruthy();
+  expect(screen.getByRole('textbox',{name:'Comments'}).value).toBe('Unsaved synthetic comment');
 });
 it('does not use delayed formatting guidance from a previous manuscript', async () => {
   let finishFirst;
@@ -52,7 +165,7 @@ it('does not use delayed formatting guidance from a previous manuscript', async 
   render(<EICDashboard user={{name:'Synthetic'}} token="synthetic" />);
   fireEvent.click(await screen.findByRole('button',{name:/#1 Paper 1/}));
   await waitFor(()=>expect(finishFirst).toBeTypeOf('function'));
-  fireEvent.click(screen.getByRole('button',{name:'Back to Manuscripts'}));
+  fireEvent.click(screen.getByRole('button',{name:'Back to manuscripts'}));
   fireEvent.click(await screen.findByRole('button',{name:/#2 Paper 2/}));
   expect(await screen.findByText('Waiting for the formatter to respond to the invitation.')).toBeTruthy();
   await act(async()=>finishFirst({ok:true,json:async()=>({manuscript_id:1,status:'formatting',invitations:[],submissions:[{status:'pending_eic'}]})}));
@@ -83,7 +196,7 @@ it('ignores late details when navigating between manuscripts', async () => {
   }));
   render(<EICDashboard user={{name:'Synthetic'}} token="synthetic" />);
   fireEvent.click(await screen.findByRole('button',{name:/#1 Paper 1/}));
-  fireEvent.click(screen.getByRole('button',{name:'Back to Manuscripts'}));
+  fireEvent.click(screen.getByRole('button',{name:'Back to manuscripts'}));
   fireEvent.click(await screen.findByRole('button',{name:/#2 Paper 2/}));
   expect(await screen.findByText('Timeline #2')).toBeTruthy();
   resolveFirst({ok:true,json:async()=>overview(1)});
@@ -95,6 +208,9 @@ it('ignores late details when navigating between manuscripts', async () => {
   fireEvent.click(summary);
   expect(summary.parentElement.open).toBe(true);
   expect(screen.getByText('No activity records are available.')).toBeTruthy();
+  const comments = screen.getByText('Workflow Comments').closest('details');
+  fireEvent.click(within(comments).getByText('Workflow Comments'));
+  expect(within(comments).getByText('No workflow comments are available.')).toBeTruthy();
   expect(screen.queryByRole('button',{name:/refresh/i})).toBeNull();
 });
 
@@ -204,7 +320,7 @@ it('keeps private notes and staff comments separate near the top and preserves d
   const comments=screen.getByText('Comments (Staff Shared)');
   expect(screen.getAllByText('Private Notes')).toHaveLength(1);
   expect(screen.getAllByText('Comments (Staff Shared)')).toHaveLength(1);
-  const stageHeading = await within(document.querySelector('.eic-workflow')).findByRole('heading',{name:'Initial Screening',level:3});
+  const stageHeading = await within(document.querySelector('.eic-workflow')).findByRole('heading',{name:'Initial screening',level:3});
   expect(comments.compareDocumentPosition(stageHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   fireEvent.click(notes);
   fireEvent.change(within(notes.closest('details')).getByLabelText('New note'),{target:{value:'Private draft'}});
@@ -244,7 +360,7 @@ it('does not restore an old-session overview after the token changes', async () 
   rerender(<EICDashboard user={{name:'Synthetic'}} token="new" />);
   await act(async()=>finishOld({ok:true,json:async()=>overview(1)}));
   expect(screen.queryByText('Abstract 1')).toBeNull();
-  fireEvent.click(screen.getByRole('button',{name:'Back to Manuscripts'}));
+  fireEvent.click(screen.getByRole('button',{name:'Back to manuscripts'}));
   expect(await screen.findByRole('button',{name:/#1 Paper 1/})).toBeTruthy();
 });
 
@@ -273,7 +389,7 @@ it('requires a valid current round even when server decision flag is true', asyn
   }));
   render(<EICDashboard user={{name:'Synthetic'}} token="synthetic" />);
   fireEvent.click(await screen.findByRole('button',{name:/#1 Paper 1/}));
-  expect(await screen.findByText('Review decision eligibility is unavailable.')).toBeTruthy();
+  expect(await screen.findByText('Review-round information is unavailable or inconsistent. Refresh before acting.')).toBeTruthy();
   expect(screen.queryByRole('button',{name:'View editorial decision'})).toBeNull();
   fireEvent.click(within(screen.getByRole('navigation',{name:'Manuscript stages'})).getByRole('button',{name:/EIC Decision/}));
   expect(screen.queryByRole('button',{name:'Record editorial decision'})).toBeNull();
@@ -310,4 +426,27 @@ it('follows a newly current stage after a confirmed screening action', async () 
   fireEvent.click(screen.getByRole('button',{name:'Record screening'}));
   await waitFor(()=>expect(within(screen.getByRole('navigation',{name:'Manuscript stages'})).getByRole('button',{name:/Initial Editing/}).getAttribute('aria-pressed')).toBe('true'));
   expect(screen.getByRole('heading',{name:'Initial Editor Assignment'})).toBeTruthy();
+});
+
+it.each(['Submission','Initial Screening','Initial Editing','Peer Review','EIC Decision','Author Agreement','Final Editing','Formatting','Publication'])('opens the %s workspace and returns to manuscript progress', async stage => {
+  const scroll = vi.fn();
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll });
+  vi.stubGlobal('fetch', vi.fn(async url => {
+    if (url.endsWith('/manuscripts/')) return {ok:true,json:async()=>[{manuscript_id:1,title:'Paper 1',status:'submitted'}]};
+    if (url.endsWith('/eic/editors')) return {ok:true,json:async()=>[]};
+    if (url.endsWith('/1/overview')) return {ok:true,json:async()=>overview(1)};
+    return {ok:false,json:async()=>({})};
+  }));
+  render(<EICDashboard user={{name:'Synthetic'}} token="synthetic" />);
+  fireEvent.click(await screen.findByRole('button',{name:/#1 Paper 1/}));
+  const navigation=await screen.findByRole('navigation',{name:'Manuscript stages'});
+  fireEvent.click(within(navigation).getByRole('button',{name:`View ${stage} workspace`}));
+  const workspace=document.getElementById('eic-current-actions');
+  await waitFor(()=>expect(workspace.querySelector('[data-eic-stage]')?.getAttribute('data-eic-stage')).toBe(stage));
+  await waitFor(()=>expect(document.activeElement).toBe(workspace));
+  expect(scroll).toHaveBeenCalled();
+  expect(within(workspace).queryByRole('button',{name:'Back to Manuscript Progress'})).toBeNull();
+  fireEvent.click(within(navigation).getByRole('button',{name:'View Submission workspace'}));
+  await waitFor(()=>expect(workspace.querySelector('[data-eic-stage]')?.getAttribute('data-eic-stage')).toBe('Submission'));
+  delete HTMLElement.prototype.scrollIntoView;
 });

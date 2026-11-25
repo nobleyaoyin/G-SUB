@@ -8,9 +8,9 @@ export const roleLabels = {
 
 // Explanatory only; server authorization remains authoritative.
 export const roleResponsibilities = {
-  eic: "Coordinate assignments and editorial decisions.",
-  editor: "Complete assigned initial or final editing work.",
+  eic: "Oversee manuscripts, coordinate reviewers and make editorial decisions.",
+  editor: "Complete authorized initial editing, final editing and formatting assignments.",
   reviewer: "Review assigned manuscripts and submit feedback.",
-  author: "Submit manuscripts and respond to editorial requests.",
-  formatter: "Complete assigned formatting work.",
+  author: "Manage drafts, submit manuscripts, revise and track progress.",
+  formatter: "Complete assigned formatting work. Sign in through General / Copy Editor.",
 };

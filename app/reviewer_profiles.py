@@ -27,11 +27,17 @@ def _clean(value, maximum):
 
 class ReviewerProfileInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
+    full_name: str | None = Field(default=None, max_length=100)
     professional_title: str | None = Field(default=None, max_length=100)
     institution: str | None = Field(default=None, max_length=200)
     department: str | None = Field(default=None, max_length=150)
     research_areas: list[str] = Field(default_factory=list, max_length=12)
     expertise: list[str] = Field(default_factory=list, max_length=12)
+
+    @field_validator('full_name')
+    @classmethod
+    def valid_name(cls, value):
+        return _clean(value, 100) if value is not None else None
 
     @field_validator('professional_title', 'institution', 'department')
     @classmethod
@@ -75,7 +81,12 @@ def load_profiles(db, user_ids):
 
 def save_profile(db, user_id, data):
     if not schema_available(db): raise HTTPException(503, 'Reviewer profiles unavailable')
-    values = data.model_dump()
+    from app.models import User
+    user = db.get(User, user_id)
+    if not user or user.role != 'reviewer': raise HTTPException(403, 'Reviewer profile unavailable')
+    values = data.model_dump(exclude={'full_name'})
+    if data.full_name is not None:
+        user.name = data.full_name
     values.update(user_id=user_id, research_areas=json.dumps(data.research_areas, ensure_ascii=False),
                   expertise=json.dumps(data.expertise, ensure_ascii=False),
                   updated_at=datetime.now(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z'),

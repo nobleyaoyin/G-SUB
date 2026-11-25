@@ -1,21 +1,53 @@
+import {workflowStatusLabel} from './workflowStatus';
 import useReturnRefresh from "./useReturnRefresh";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { API_URL } from "./api";
 import "./InitialEditingPanel.css";
+
+function recordedTime(value) {
+  if (!/(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) return `${value.replace('T', ' ')} (timezone not recorded)`;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
 
 export default function AuthorAgreementPanel({ token, onChanged, manuscriptId }) {
   const [items, setItems] = useState([]);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const scope = useRef({ token, manuscriptId });
+  const sequence = useRef(0);
+  const running = useRef(null);
+  if (scope.current.token !== token || scope.current.manuscriptId !== manuscriptId) {
+    scope.current = { token, manuscriptId }; sequence.current++;
+  }
+  const [owner, setOwner] = useState(scope.current);
   const load = useCallback(async () => {
+    const expected = scope.current, version = ++sequence.current;
+    setLoading(true);
+    try {
     const response = await fetch(`${API_URL}/agreements/my`, { headers: { Authorization: `Bearer ${token}` } });
     if (!response.ok) throw new Error("Could not load author agreements.");
-    setItems(await response.json());
-  }, [token]);
-  useEffect(() => { load().catch(e => setError(e.message)); }, [load]);
-  useReturnRefresh(() => load().catch(e => setError(e.message)), busy);
+    const result = await response.json();
+    if (scope.current === expected && sequence.current === version) setItems(result);
+    } finally {
+      if (scope.current === expected && sequence.current === version) setLoading(false);
+    }
+  }, [token, manuscriptId]);
+  useEffect(() => {
+    const expected = scope.current;
+    setOwner(expected); setItems([]); setError(""); setMessage(""); setBusy(false);
+    load().catch(e => { if (scope.current === expected) setError(e.message); });
+  }, [load]);
+  useReturnRefresh(() => {
+    const expected = scope.current;
+    return load().catch(e => { if (scope.current === expected) setError(e.message); });
+  }, busy);
   const respond = async (item, decision) => {
+    const expected = scope.current;
+    if (running.current === expected) return;
+    running.current = expected;
     setBusy(true); setError(""); setMessage("");
     let body;
     try {
@@ -25,25 +57,33 @@ export default function AuthorAgreementPanel({ token, onChanged, manuscriptId })
       });
       body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : `Request failed (${response.status}).`);
+      if (body.status !== (decision === "accept" ? "accepted" : "declined")) throw new Error("The saved response could not be verified");
     } catch (e) {
-      setError(`Could not confirm the agreement response: ${e.message}. Return to this view to check its status before trying again.`);
-      setBusy(false);
+      if (scope.current === expected) {
+        setError(`Could not confirm the agreement response: ${e.message}. Return to this view to check its status before trying again.`);
+        setBusy(false);
+      }
+      if (running.current === expected) running.current = null;
       return;
     }
+    if (scope.current !== expected) { if (running.current === expected) running.current = null; return; }
     // Keep the saved response visible and prevent another submission even if a refresh fails.
-    const savedStatus = body.status || (decision === "accept" ? "accepted" : "declined");
+    const savedStatus = body.status;
     setItems(previous => previous.map(existing => existing.agreement_id === item.agreement_id
       ? { ...existing, status: savedStatus, manuscript_status: body.manuscript_status, responded_at: body.responded_at }
       : existing));
-    setMessage(`Prototype agreement ${savedStatus}.`);
-    const results = await Promise.allSettled([load(), Promise.resolve().then(() => onChanged())]);
+    setMessage(`Agreement response recorded: ${savedStatus}.`);
+    const results = await Promise.allSettled([load(), Promise.resolve().then(() => onChanged?.())]);
+    if (scope.current !== expected) { if (running.current === expected) running.current = null; return; }
     if (results.some(result => result.status === "rejected" || result.value === false)) {
       setError("Response saved, but refresh failed. Return to this view to check the latest status; do not submit the response again.");
     }
     setBusy(false);
+    if (running.current === expected) running.current = null;
   };
   const visibleItems = manuscriptId == null ? items : items.filter(item => item.manuscript_id === manuscriptId);
-  if (!visibleItems.length && !error && !message) return null;
+  if (owner !== scope.current) return null;
+  if (!visibleItems.length && !error && !message && !loading) return null;
   return <section
     className="initial-editing-panel author-agreement-panel"
     aria-label="Author agreements"
@@ -59,13 +99,14 @@ export default function AuthorAgreementPanel({ token, onChanged, manuscriptId })
 
     {error && <p role="alert">{error}</p>}
     {message && <p role="status">{message}</p>}
+    {loading && <p role="status">Loading author agreements…</p>}
 
-    {!visibleItems.length ? (
+    {!visibleItems.length ? (!loading && (
       <div className="agreement-empty">
         <h3>No pending agreements</h3>
         <p>There are currently no author agreements requiring your response.</p>
       </div>
-    ) : (
+    )) : (
       <div className="agreement-list">
         {visibleItems.map(item => (
           <article className="agreement-card" key={item.agreement_id}>
@@ -79,25 +120,29 @@ export default function AuthorAgreementPanel({ token, onChanged, manuscriptId })
 
               <span className={`agreement-status ${item.status}`}>
                 {typeof item.status === "string"
-                  ? item.status.replaceAll("_", " ")
+                  ? workflowStatusLabel(item.status)
                   : "Unknown"}
               </span>
             </div>
 
             <div className="agreement-metadata">
               <span>
-                **Version**
+                Version
                 <strong>{item.agreement_version}</strong>
               </span>
+              {item.created_at && <span>Generated <strong>{recordedTime(item.created_at)}</strong></span>}
               {item.responded_at && (
                 <span>
-                  **Responded**
-                  <strong>{new Date(item.responded_at).toLocaleString()}</strong>
+                  Responded
+                  <strong>{recordedTime(item.responded_at)}</strong>
                 </span>
               )}
             </div>
 
             <div className="agreement-terms">
+              {item.template_status === 'prototype' && <p>Prototype only — this is not an approved legal agreement.</p>}
+              {item.template_status === 'prototype' && <p>Template approval: Pending owner approval.</p>}
+              {item.template_status === 'unverified' && <p>Template approval is unavailable for this historical agreement.</p>}
               <h4>Agreement Terms</h4>
               <div className="agreement-text">{item.agreement_text}</div>
             </div>

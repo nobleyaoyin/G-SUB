@@ -1,0 +1,28 @@
+.role-overview { display: grid; gap: 16px; }
+.role-overview.reviewer-overview-layout { grid-template-columns: minmax(0, 1fr) 250px; gap: 20px; align-items: start; }
+.reviewer-overview-content { display: grid; min-width: 0; gap: 16px; }
+.reviewer-overview-statistics { min-width: 0; }
+.role-overview.eic-overview-layout { grid-template-columns: minmax(0, 1fr) 250px; gap: 20px; align-items: start; }
+.eic-overview-statistics { min-width: 0; }
+@media (max-width: 850px) { .role-overview.eic-overview-layout { grid-template-columns: minmax(0, 1fr); } }
+.reviewer-recent-info { min-width: 0; overflow-wrap: anywhere; }
+.reviewer-recent-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.reviewer-recent-list > li > button { flex: 0 0 auto; }
+@media (max-width: 900px) { .role-overview.reviewer-overview-layout { grid-template-columns: minmax(0, 1fr); } }
+.role-overview h2, .role-overview h3 { margin: 0; }
+.role-summary-card, .role-recent-card { background: #fff; border: 1px solid var(--border-subtle); border-radius: 8px; padding: 16px; min-width: 0; }
+.role-summary-card { display: flex; flex-direction: column; gap: 6px; max-width: 260px; }
+.role-summary-card strong { font-size: 1.6rem; }
+.role-recent-heading, .role-recent-card li { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.role-recent-card ul { list-style: none; padding: 0; margin: 12px 0 0; }
+.role-recent-card li { padding: 12px 0; border-top: 1px solid var(--border-subtle); }
+.role-recent-card li div { min-width: 0; overflow-wrap: anywhere; }
+.role-recent-card li p { margin: 4px 0 0; color: var(--text-secondary); }
+.role-recent-card button { flex-shrink: 0; }
+@media (max-width: 600px) { .role-recent-heading, .role-recent-card li { align-items: flex-start; flex-direction: column; } }
+.role-list-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 165px), 1fr)); align-items: end; gap: 12px; margin: 12px 0; }
+.role-list-controls label { display: grid; gap: 6px; min-width: 0; }
+.role-list-controls input, .role-list-controls select { box-sizing: border-box; width: 100%; min-width: 0; min-height: 42px; padding: 8px 10px; border: 1px solid var(--control-border, #cbd5e1); border-radius: 8px; background: var(--surface, #fff); color: var(--text-primary, #172033); font: inherit; }
+.role-list-controls select { padding-inline-end: 2rem; }
+.role-list-controls > .stage-filter-clear { grid-column: -2 / -1; justify-self: end; padding-inline: 16px; }
+.role-list-controls > [role='status'], .role-list-controls > small { grid-column: 1 / -1; margin: 0; }

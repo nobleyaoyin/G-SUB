@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { metadataCounts } from "./metadataCounts";
+import { ManuscriptVersionHistory } from "../DocumentDistribution";
+import { originalDocumentName } from "../documentNames";
 import "./SubmissionWizard.css";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -13,11 +15,18 @@ function SubmissionWizard({
   onClose,
   initialManuscript = null,
   onStateChange,
+  token,
+  onDownloadCurrent,
+  downloadBusy = false,
+  renderDocumentEditor,
+  documentDirty = false,
+  onDiscardDocumentEdits,
+  getSelectedOnlineDraft,
 }) {
   const [step, setStep] = useState(() => {
     if (!initialManuscript) return 1;
 
-    return initialManuscript.has_pdf ? 3 : 2;
+    return 2;
   });
 
   const [manuscriptId, setManuscriptId] = useState(
@@ -44,6 +53,16 @@ function SubmissionWizard({
       ? `Existing manuscript file (${initialManuscript.file_type.toUpperCase()})`
       : ""
   );
+  const [currentVersion, setCurrentVersion] = useState(null);
+  const [currentFormat, setCurrentFormat] = useState(initialManuscript?.file_type || null);
+  const [sessionFilename, setSessionFilename] = useState(null);
+  const [sessionVersion, setSessionVersion] = useState(null);
+  const [historyChecked, setHistoryChecked] = useState(false);
+  const receiveCurrentVersion = useCallback(value => { setCurrentVersion(value); setHistoryChecked(true); }, []);
+  const sessionNameIsCurrent = !historyChecked || Boolean(currentVersion && sessionVersion &&
+    ((sessionVersion.versionId && currentVersion.version_id === sessionVersion.versionId) ||
+     (sessionVersion.filename && currentVersion.filename === sessionVersion.filename)));
+  const displayFilename = originalDocumentName(currentVersion) || (sessionNameIsCurrent ? sessionFilename : null);
 
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -51,7 +70,7 @@ function SubmissionWizard({
 
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const dirty = step !== 4 && (title !== savedFields.title || abstract !== savedFields.abstract || Boolean(file));
+  const dirty = step !== 4 && (title !== savedFields.title || abstract !== savedFields.abstract || Boolean(file) || documentDirty);
   const busy = saving || uploading || submitting;
   useEffect(() => { onStateChange?.({ dirty, busy }); }, [onStateChange, dirty, busy]);
 
@@ -139,6 +158,7 @@ function SubmissionWizard({
     event.preventDefault();
 
     if (uploading || !file || !manuscriptId) return;
+    if (documentDirty) { setError("Save or close the document editor before replacing the file."); return; }
 
     setUploading(true);
     setError("");
@@ -157,6 +177,11 @@ function SubmissionWizard({
 
       setHasUploadedFile(true);
       setUploadedFilename(file.name);
+      setSessionFilename(file.name);
+      setSessionVersion(result && typeof result === 'object' ? result : null);
+      setHistoryChecked(false);
+      setCurrentFormat(file.name.split('.').pop().toLowerCase());
+      setCurrentVersion(null);
       setFile(null);
       setMessage("Manuscript file uploaded successfully.");
 
@@ -191,6 +216,7 @@ function SubmissionWizard({
 
   // Continue with an already uploaded manuscript file.
   const handleContinueToReview = () => {
+    if (documentDirty) { setError("Save or close the document editor before continuing."); return; }
     if (!hasUploadedFile) {
       setError("Upload a manuscript file before continuing.");
       return;
@@ -326,7 +352,7 @@ function SubmissionWizard({
       )}
 
       {error && (
-        <div className="wizard-alert error" role="alert">
+        <div id="wizard-error" className="wizard-alert error" role="alert">
           {error}
         </div>
       )}
@@ -361,9 +387,11 @@ function SubmissionWizard({
               placeholder="Enter your manuscript title"
               required
               disabled={saving}
+              aria-describedby={`wizard-title-count${error ? ' wizard-error' : ''}`}
+              aria-invalid={Boolean(error && (!title.trim() || metadataCounts(title.trim()).characters > 255))}
             />
 
-            <small>{metadataCounts(title).characters}/255 characters</small>
+            <small id="wizard-title-count">{metadataCounts(title).characters}/255 characters</small>
           </div>
 
           <div className="wizard-field">
@@ -379,12 +407,15 @@ function SubmissionWizard({
               rows={9}
               required
               disabled={saving}
+              aria-describedby={`wizard-abstract-help wizard-abstract-count wizard-count-method${error ? ' wizard-error' : ''}`}
+              aria-invalid={Boolean(error && !abstract.trim())}
             />
 
-            <small>
+            <small id="wizard-abstract-help">
               Provide a clear summary of your research and its main findings.
             </small>
-            <small aria-live="polite">{metadataCounts(abstract).words} words · {metadataCounts(abstract).characters} characters (display count)</small>
+            <small id="wizard-abstract-count" aria-live="polite">{metadataCounts(abstract).words} words · {metadataCounts(abstract).characters} characters (display count)</small>
+            <small id="wizard-count-method">Words are separated by whitespace; characters are Unicode code points. These counts are informational, not submission limits.</small>
           </div>
           <p>Keywords are not collected in this submission. Body word count is unavailable until a reliable extraction workflow is approved.</p>
 
@@ -435,9 +466,16 @@ function SubmissionWizard({
           {hasUploadedFile && !file && (
             <div className="wizard-uploaded-file" role="status">
               <strong>✓ Existing file available</strong>
-              <span>{uploadedFilename || "Manuscript file uploaded"}</span>
+              <span>Current filename: {displayFilename || "Original filename unavailable"}</span>
+              <span>Format: {currentFormat ? currentFormat.toUpperCase() : "Unavailable"}</span>
+              <span>Version: {Number.isInteger(currentVersion?.version_number) && currentVersion.version_number > 0 ? currentVersion.version_number : "Unavailable"}</span>
             </div>
           )}
+
+          {hasUploadedFile && onDownloadCurrent && <button type="button" className="wizard-secondary" disabled={downloadBusy} onClick={() => onDownloadCurrent(manuscriptId)}>{downloadBusy ? "Downloading..." : "Download Current File"}</button>}
+          {getSelectedOnlineDraft?.(manuscriptId) && <p role="status">{getSelectedOnlineDraft(manuscriptId)}</p>}
+          {hasUploadedFile && renderDocumentEditor && <div className="wizard-document-editor">{renderDocumentEditor(manuscriptId, currentFormat)}</div>}
+          {hasUploadedFile && token && manuscriptId && <ManuscriptVersionHistory token={token} manuscriptId={manuscriptId} onCurrentVersion={receiveCurrentVersion} historyOnly authorView />}
 
           <div className="wizard-upload-area">
             <label htmlFor="wizard-file">
@@ -467,6 +505,7 @@ function SubmissionWizard({
             {file && (
               <div className="wizard-selected-file">
                 <span>{file.name}</span>
+                <span>Format: {file.name.split('.').pop().toUpperCase()} · Size: {file.size.toLocaleString()} bytes</span>
 
                 <button
                   type="button"
@@ -485,6 +524,8 @@ function SubmissionWizard({
               type="button"
               className="wizard-secondary"
               onClick={() => {
+                if (documentDirty && !window.confirm("Discard unsaved document edits?")) return;
+                if (documentDirty) onDiscardDocumentEdits?.();
                 setStep(1);
                 setError("");
                 setMessage("");
@@ -520,7 +561,7 @@ function SubmissionWizard({
                 className="wizard-primary"
                 disabled={uploading || !file}
               >
-                {uploading ? "Uploading..." : "Upload File"}
+                {uploading ? "Uploading..." : hasUploadedFile ? "Upload Replacement File" : "Upload File"}
               </button>
             </div>
           </div>
@@ -569,7 +610,7 @@ function SubmissionWizard({
             </span>
 
             <strong>
-              {uploadedFilename || "Uploaded manuscript"}
+              {displayFilename || (historyChecked ? "Original filename unavailable" : uploadedFilename) || "Filename unavailable"}
             </strong>
 
             <span>
@@ -583,6 +624,7 @@ function SubmissionWizard({
             Once submitted, the manuscript will enter the review workflow
             and can no longer be edited as a draft.
           </div>
+          {getSelectedOnlineDraft?.(manuscriptId) && <p role="status">{getSelectedOnlineDraft(manuscriptId)}</p>}
 
           <div className="wizard-actions">
             <button

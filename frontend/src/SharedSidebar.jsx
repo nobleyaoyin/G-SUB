@@ -12,7 +12,6 @@ function SharedSidebar({
   user,
   activeSection = "dashboard",
   onNavigate,
-  onLogout,
   googleLink,
 }) {
   const role = user?.role;
@@ -55,17 +54,7 @@ function SharedSidebar({
         ))}
       </nav>
 
-      <div className="shared-sidebar-footer">
-        {googleLink}
-        <button
-          type="button"
-          className="shared-sidebar-logout"
-          onClick={onLogout}
-        >
-          <span aria-hidden="true">↪</span>
-          <span>Logout</span>
-        </button>
-      </div>
+      {googleLink && <div className="shared-sidebar-footer">{googleLink}</div>}
     </aside>
   );
 }

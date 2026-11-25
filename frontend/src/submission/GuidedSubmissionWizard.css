@@ -1,0 +1,24 @@
+.guided-wizard progress { width: 100%; height: 9px; accent-color: #2563eb; }
+.guided-steps { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; margin: 20px 0; list-style: none; }
+.guided-steps button { border: 1px solid #cbd5e1; border-radius: 7px; background: #f8fafc; padding: 7px 9px; color: #475569; }
+.guided-steps .current button { background: #dbeafe; border-color: #2563eb; color: #1e40af; font-weight: 700; }
+.guided-steps .complete button { color: #166534; }
+.guided-steps button:disabled { opacity: 1; cursor: default; }
+.guided-body { border: 0; padding: 0; margin: 0; min-width: 0; }
+.guided-body p { overflow-wrap: anywhere; }
+.guided-field, .guided-fields label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; min-width: 0; }
+.guided-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
+.guided-field input, .guided-field textarea, .guided-field select, .guided-fields input { width: 100%; min-width: 0; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; font: inherit; background: white; }
+.guided-person, .guided-affiliation { border: 1px solid #dbe3ed; border-radius: 10px; padding: 16px; margin: 0 0 16px; min-width: 0; }
+.guided-person legend, .guided-affiliation legend { font-weight: 700; padding: 0 5px; }
+.guided-affiliation { margin-top: 16px; }
+.guided-actions, .guided-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.guided-footer { justify-content: space-between; margin-top: 24px; }
+.guided-tags, .guided-attachments { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 9px; }
+.guided-tags li { background: #dbeafe; border-radius: 20px; padding: 5px 10px; }
+.guided-attachments { flex-direction: column; }
+.guided-attachments li, .guided-review { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; padding: 12px; border: 1px solid #e2e8f0; border-radius: 8px; overflow-wrap: anywhere; }
+.guided-review p { white-space: pre-wrap; margin: 5px 0 0; }
+@media (max-width: 700px) { .guided-fields { grid-template-columns: 1fr; } .guided-footer, .guided-actions { align-items: stretch; } .guided-actions { width: 100%; } .guided-actions > button { flex: 1 1 auto; } }
+.guided-wizard [aria-invalid="true"] { border-color: #b91c1c; }
+.guided-field-error { color: #b91c1c; font-weight: 500; }

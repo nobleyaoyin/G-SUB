@@ -111,6 +111,14 @@ describe("SubmissionWizard - Step 1", () => {
 });
 
 describe("SubmissionWizard - Step 2", () => {
+  it('shows the actual selected file format and size before upload', async () => {
+    setup();
+    await continueToUpload();
+    const file = new File(['synthetic'], 'article.txt', {type:'text/plain'});
+    fireEvent.change(screen.getByLabelText(/Select Manuscript File/), {target:{files:[file]}});
+    expect(screen.getByText('article.txt')).toBeTruthy();
+    expect(screen.getByText('Format: TXT · Size: 9 bytes')).toBeTruthy();
+  });
   it.each(["pdf", "docx", "doc", "txt"])(
     "accepts and uploads .%s files",
     async (extension) => {
@@ -298,7 +306,7 @@ describe("SubmissionWizard - Resume Draft", () => {
     expect(screen.getByText("Draft #101")).toBeTruthy();
   });
 
-  it("starts at Step 3 when the draft already has a file", () => {
+  it("starts at Step 2 when the draft already has a file", () => {
     setup({
       initialManuscript: {
         manuscript_id: 102,
@@ -309,8 +317,8 @@ describe("SubmissionWizard - Resume Draft", () => {
       },
     });
 
-    expect(screen.getByText("Step 3 of 3")).toBeTruthy();
-    expect(screen.getByText("Review Your Submission")).toBeTruthy();
+    expect(screen.getByText("Step 2 of 3")).toBeTruthy();
+    expect(screen.getByText("Upload Manuscript")).toBeTruthy();
     expect(screen.getByText("Uploaded Draft")).toBeTruthy();
   });
 });

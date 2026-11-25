@@ -114,8 +114,12 @@ it('places separate notes and staff comments before the overview without losing 
     if (path.includes('/notes') || path.includes('/general-comments')) return mockResponse([]);
     throw new Error(`Unexpected API request: ${path}`);
   }));
-  render(<EditorDashboard user={{name:'Synthetic'}} token="synthetic" />);
+  render(<EditorDashboard user={{name:'Synthetic'}} token="synthetic" section="manuscripts" />);
   fireEvent.click(await screen.findByRole('button', {name:'Open manuscript'}));
+  const sidebar = screen.getByLabelText('Manuscript statistics');
+  expect(sidebar.classList.contains('manuscripts-list-sidebar')).toBe(true);
+  expect(sidebar.parentElement.querySelector('.manuscripts-list-content [data-workspace="selected"]')).toBeTruthy();
+  expect(screen.queryByText('Stage Threads')).toBeNull();
   const notes = screen.getByText('Private Notes');
   const comments = screen.getByText('Comments (Staff Shared)');
   expect(screen.getAllByText('Private Notes')).toHaveLength(1);
@@ -131,7 +135,7 @@ it('places separate notes and staff comments before the overview without losing 
   fireEvent.change(comment,{target:{value:'Staff draft'}});
   fireEvent.click(comments); fireEvent.click(comments);
   expect(within(comments.closest('details')).getByLabelText('Add a general comment').value).toBe('Staff draft');
-  expect(screen.getByRole('button', {name:'Back to Manuscripts'})).toBeTruthy();
+  expect(screen.getByRole('button', {name:'Back to manuscripts'})).toBeTruthy();
   expect(screen.getByText('Manuscript Overview')).toBeTruthy();
   expect(notes.closest('[data-workspace="selected"]')).toBe(comments.closest('[data-workspace="selected"]'));
 });
@@ -148,13 +152,13 @@ it('opens and returns from a formatting-only manuscript', async () => {
   );
 
   expect(await screen.findByRole('button', {
-    name: 'Back to Manuscripts',
+    name: 'Back to manuscripts',
   })).toBeTruthy();
 
   expect(screen.queryByText('Paper 2')).toBeNull();
 
   fireEvent.click(screen.getByRole('button', {
-    name: 'Back to Manuscripts',
+    name: 'Back to manuscripts',
   }));
 
   expect(await screen.findByText('Paper 2')).toBeTruthy();
@@ -174,7 +178,7 @@ it('preserves formatting changes when manuscript navigation is cancelled', async
   }));
 
   fireEvent.click(screen.getByRole('button', {
-    name: 'Back to Manuscripts',
+    name: 'Back to manuscripts',
   }));
 
   expect(window.confirm).toHaveBeenCalledOnce();
@@ -200,7 +204,7 @@ it('allows manuscript navigation after confirming discard', async () => {
   window.confirm.mockReturnValue(true);
 
   fireEvent.click(screen.getByRole('button', {
-    name: 'Back to Manuscripts',
+    name: 'Back to manuscripts',
   }));
 
   expect(await screen.findByText('Paper 2')).toBeTruthy();
@@ -250,7 +254,7 @@ it('allows notification navigation after confirming discard', async () => {
   }));
 
   expect(await screen.findByRole('button', {
-    name: 'Back to Manuscripts',
+    name: 'Back to manuscripts',
   })).toBeTruthy();
 
   expect(screen.getByText('Paper 2')).toBeTruthy();
@@ -339,7 +343,7 @@ it('ignores an obsolete review-history error after selecting another manuscript'
   fireEvent.click(within((await screen.findByText('History paper 1')).closest('.editor-card')).getByRole('button',{name:'Open manuscript'}));
   fireEvent.click(screen.getByRole('button',{name:'View Reviews'}));
   await waitFor(()=>expect(failA).toBeTypeOf('function'));
-  fireEvent.click(screen.getByRole('button',{name:'Back to Manuscripts'}));
+  fireEvent.click(screen.getByRole('button',{name:'Back to manuscripts'}));
   fireEvent.click(within(screen.getByText('History paper 2').closest('.editor-card')).getByRole('button',{name:'Open manuscript'}));
   await act(async()=>failA(new Error('OLD HISTORY FAILURE')));
   expect(screen.queryByText('OLD HISTORY FAILURE')).toBeNull();

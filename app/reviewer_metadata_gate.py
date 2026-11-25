@@ -44,6 +44,15 @@ class ReviewerProgressStageDTO(BaseModel):
     state: str
 
 
+class ReviewerTaskDTO(BaseModel):
+    model_config = ConfigDict(extra='forbid', frozen=True)
+    task_state: str
+    task_message: str
+    relevant_stage: str | None
+    action_label: None = None
+    permitted_action_target: None = None
+
+
 class ReviewerProgressDTO(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True)
     manuscript_id: int
@@ -52,6 +61,7 @@ class ReviewerProgressDTO(BaseModel):
     current_stage: str | None
     next_action: str
     stages: list[ReviewerProgressStageDTO]
+    participant_task: ReviewerTaskDTO
 
 
 class ReviewerSafeAssignmentDTO(BaseModel):

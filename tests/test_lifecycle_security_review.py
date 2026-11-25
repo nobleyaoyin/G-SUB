@@ -111,13 +111,31 @@ class RouteSecurityReview(unittest.TestCase):
             db.execute("INSERT INTO reviewer_invitation_invalidations VALUES ('synthetic',?,'cancelled',NULL,?,?,'editorial_cancellation')",(aid,self.fx.ids['Eic'],STAMP));db.commit()
         self.fx.actor=SimpleNamespace(user_id=self.fx.ids['Reviewer'],role='reviewer',name='Reviewer')
         response=self.fx.client.post(f'/assignments/{aid}/invitation-response',json={'decision':'accept'})
-        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.status_code,409)
         download=self.fx.client.get(f'/assignments/{aid}/download')
-        self.assertEqual(download.status_code,200)
+        self.assertEqual(download.status_code,409)
         review=self.fx.client.post('/reviews/',json={'assignment_id':aid,'comments':'Synthetic review','recommendation':'accept'})
-        self.assertEqual(review.status_code,201)
+        self.assertEqual(review.status_code,409)
         self.assertEqual(self.fx.client.get(f'/manuscripts/{self.fx.mid}/download').status_code,403)
         self.assertEqual(self.fx.client.get(f'/manuscripts/{self.fx.mid}/versions').status_code,403)
+
+    def test_preexisting_invalidation_denies_an_accepted_assignment(self):
+        invited = self.fx.invite(); self.assertEqual(invited.status_code, 201)
+        aid = invited.json()['assignment_id']
+        self.fx.actor = SimpleNamespace(user_id=self.fx.ids['Reviewer'], role='reviewer', name='Reviewer')
+        response = self.fx.client.post(f'/assignments/{aid}/invitation-response', json={'decision':'accept'})
+        self.assertEqual(response.status_code, 200)
+        # This synthetic record tests enforcement only; it does not authorize
+        # revoking an accepted assignment through the real workflow.
+        with sqlite3.connect(self.fx.path) as db:
+            db.execute('PRAGMA foreign_keys=ON')
+            db.execute("INSERT INTO reviewer_invitation_invalidations VALUES ('accepted-synthetic',?,'cancelled',NULL,?,?,'editorial_cancellation')", (aid, self.fx.ids['Eic'], STAMP))
+            db.commit()
+        self.assertEqual(self.fx.client.get(f'/assignments/{aid}/download').status_code, 409)
+        review = self.fx.client.post('/reviews/', json={'assignment_id':aid,'comments':'Synthetic','recommendation':'accept'})
+        self.assertEqual(review.status_code, 409)
+        with sqlite3.connect(self.fx.path) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM reviews WHERE assignment_id=?', (aid,)).fetchone()[0], 0)
 
 
 if __name__=='__main__':unittest.main()

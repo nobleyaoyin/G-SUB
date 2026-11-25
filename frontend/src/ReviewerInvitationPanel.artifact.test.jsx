@@ -14,5 +14,5 @@ it("binds an accepted reviewer's approved document", async () => {
   render(<ReviewerInvitationPanel manuscriptId={4} round={1} status="ready_for_peer_review" token="synthetic" artifactBinding />);
   await userEvent.click(await screen.findByRole('button', { name: 'Bind reviewer document' }));
   expect((await screen.findByRole('status')).textContent).toContain('Reviewer document bound');
-  expect(fetch.mock.calls.some(([url, opts]) => url.endsWith('/review-invitations/7/bind-artifact') && opts.method === 'POST')).toBe(true);
+  expect(fetch.mock.calls.some(([url, opts]) => url.endsWith('/demo-invitations/7/bind-artifact') && opts.method === 'POST')).toBe(true);
 });

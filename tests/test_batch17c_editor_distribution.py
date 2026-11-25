@@ -1,5 +1,6 @@
 """Real HTTP and filesystem distribution checks using only synthetic temporary data."""
 import importlib.util
+from importlib import import_module
 import os
 import sqlite3
 from pathlib import Path
@@ -11,15 +12,23 @@ import app.routers.document_distribution as distribution
 spec=importlib.util.spec_from_file_location('migration21',Path(__file__).resolve().parents[1]/'migrations/021_document_distribution.py')
 migration=importlib.util.module_from_spec(spec);spec.loader.exec_module(migration)
 
+def migrate_current_distribution(path):
+    """Install the current additive distribution prerequisites in this test DB."""
+    from database.bootstrap.initialize import MIGRATIONS
+    migration.migrate(path)
+    for name in MIGRATIONS:
+        if '022' <= name[:3] <= '032':
+            import_module('migrations.' + name).migrate(path)
+
 
 def test_editor_grant_download_revoke_and_idempotent_retry():
     f=fixtures.ReviewerDownloadsTest();f.setUp()
     try:
         eic=User(name='Synthetic EIC',email='eic17c@example.invalid',password_hash='x',role='eic');other_editor=User(name='Other Editor',email='other17c@example.invalid',password_hash='x',role='editor');f.db.add_all([eic,other_editor])
         source=f.write(f'uploads/manuscripts/{f.mid}/paper.txt',b'Synthetic manuscript content\n')
-        f.manuscript.file_path=source;f.db.commit();f.db.refresh(eic)
+        f.manuscript.file_path=source;f.manuscript.status='initial_editing';f.db.commit();f.db.refresh(eic)
         editor_id=f.editor.user_id; eic_id=eic.user_id;other_editor_id=other_editor.user_id
-        migration.migrate(f.db_path)
+        migrate_current_distribution(f.db_path)
         private=f.root/'private-objects';private.mkdir(mode=0o700)
         with patch.object(distribution,'DATA_ROOT',f.root.resolve()),patch.dict(os.environ,{'GSUB_DISTRIBUTION_PRIVATE_ROOT':str(private.resolve())}):
             f.current=f.editor
@@ -122,8 +131,8 @@ def test_parallel_retry_and_storage_unavailable_recovery():
     f=fixtures.ReviewerDownloadsTest();f.setUp()
     try:
         eic=User(name='Synthetic EIC',email='eic17c2@example.com',password_hash='x',role='eic');f.db.add(eic)
-        f.manuscript.file_path=f.write(f'uploads/manuscripts/{f.mid}/paper.txt',b'Concurrent manuscript\n');f.db.commit()
-        migration.migrate(f.db_path);private=f.root/'private-concurrent';private.mkdir(mode=0o700)
+        f.manuscript.file_path=f.write(f'uploads/manuscripts/{f.mid}/paper.txt',b'Concurrent manuscript\n');f.manuscript.status='initial_editing';f.db.commit()
+        migrate_current_distribution(f.db_path);private=f.root/'private-concurrent';private.mkdir(mode=0o700)
         def independent_db():
             with f.Session() as db: yield db
         main.app.dependency_overrides[get_db]=independent_db
@@ -150,8 +159,8 @@ def test_notification_failure_rolls_back_grant_and_retry_reconciles():
     f=fixtures.ReviewerDownloadsTest();f.setUp()
     try:
         eic=User(name='Synthetic EIC',email='eic17c3@example.com',password_hash='x',role='eic');f.db.add(eic)
-        f.manuscript.file_path=f.write(f'uploads/manuscripts/{f.mid}/paper.txt',b'Retry manuscript\n');f.db.commit();f.current=eic
-        migration.migrate(f.db_path);private=f.root/'private-retry';private.mkdir(mode=0o700)
+        f.manuscript.file_path=f.write(f'uploads/manuscripts/{f.mid}/paper.txt',b'Retry manuscript\n');f.manuscript.status='initial_editing';f.db.commit();f.current=eic
+        migrate_current_distribution(f.db_path);private=f.root/'private-retry';private.mkdir(mode=0o700)
         with patch.object(distribution,'DATA_ROOT',f.root.resolve()),patch.dict(os.environ,{'GSUB_DISTRIBUTION_PRIVATE_ROOT':str(private.resolve())}):
             data=f.client.get(f'/document-distribution/manuscripts/{f.mid}/candidates').json();inv=data['recipients'][0]
             payload={'invitation_kind':inv['invitation_kind'],'invitation_id':inv['invitation_id'],'source_sha256':data['document']['sha256'],'idempotency_key':'transaction-retry-key-123'}

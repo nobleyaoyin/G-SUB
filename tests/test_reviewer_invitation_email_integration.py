@@ -65,6 +65,15 @@ class InvitationEmailIntegrationTest(unittest.TestCase):
             db.add(models.PreReviewConfirmation(manuscript_id=self.mid, submission_id=submission.submission_id, author_id=self.ids['Author'], file_path=rel, decision='confirm', comments='Synthetic'))
             db.add(models.InitialEditorInvitation(manuscript_id=self.mid, editor_id=self.ids['Editor'], invited_by=self.ids['Eic'], status='accepted'))
             db.commit()
+        # Current invitation routes require an EIC-owned selected review policy.
+        from importlib import import_module
+        import_module('migrations.011_blind_review_policy').migrate(self.path)
+        from app.blind_policy_store import select_mode
+        with sqlite3.connect(self.path) as policy_db:
+            policy_db.execute('PRAGMA foreign_keys=ON')
+            policy_db.execute('BEGIN IMMEDIATE')
+            select_mode(policy_db, self.mid, 'single_blind', self.ids['Eic'])
+            policy_db.commit()
         self.actor = SimpleNamespace(user_id=self.ids['Editor'], role='editor', name='Editor')
         def get_temp_db():
             with self.Session() as db: yield db
@@ -132,6 +141,30 @@ class InvitationEmailIntegrationTest(unittest.TestCase):
         response = self.invite()
         self.assertEqual(response.status_code, 503); self.assertIn('not ready', response.json()['detail'])
         self.assert_no_new_records()
+
+    def test_disabled_enqueue_also_rejects_missing_foreign_keys(self):
+        """Policy and assignment integrity do not depend on email being enabled."""
+        nofk = create_engine(f'sqlite:///{self.path}', connect_args={'check_same_thread':False})
+        self.addCleanup(nofk.dispose)
+        def nofk_db():
+            with Session(nofk) as db: yield db
+        main.app.dependency_overrides[get_db] = nofk_db
+        response = self.invite()
+        self.assertEqual(response.status_code, 503)
+        self.assertIn('not ready', response.json()['detail'])
+        self.assert_no_new_records(False)
+
+    def test_missing_policy_migration_fails_closed_without_writes(self):
+        """Keep coverage for a legacy database without the required policy marker."""
+        digest = self.hash()
+        with sqlite3.connect(self.path) as db:
+            db.execute("DELETE FROM schema_migrations WHERE migration_id='011_blind_review_policy'")
+            db.commit()
+        response = self.invite()
+        self.assertEqual(response.status_code, 503)
+        self.assertIn('policy', response.json()['detail'].lower())
+        self.assert_no_new_records(False)
+        self.assertEqual(self.hash(), digest)
 
     def test_enabled_success_original_response_and_privacy(self):
         self.schema(); self.enable()

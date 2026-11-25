@@ -17,6 +17,7 @@ from app.models import (
     FormatterInvitation,
 )
 from app.routers.users import get_current_user
+from app.editor_invitation_revocation import effective_status
 
 
 router = APIRouter(
@@ -45,7 +46,8 @@ class NoteResponse(BaseModel):
 def require_manuscript_access(db, manuscript_id, user):
     manuscript = db.get(Manuscript, manuscript_id)
 
-    if manuscript is None:
+    if manuscript is None or (manuscript.status == "draft" and
+            (user.role != "author" or manuscript.author_id != user.user_id)):
         raise HTTPException(404, "Manuscript not found")
 
     if user.role in {"eic", "chief_editor", "editor_in_chief"}:
@@ -68,15 +70,18 @@ def require_manuscript_access(db, manuscript_id, user):
         ]
 
     for model, column in invitations:
-        found = db.scalar(
-            select(model.invitation_id).where(
+        found = db.scalars(
+            select(model).where(
                 model.manuscript_id == manuscript_id,
                 column == user.user_id,
                 model.status == "accepted",
-            ).limit(1)
+            )
         )
-
-        if found is not None:
+        for invitation in found:
+            if model is InitialEditorInvitation:
+                if effective_status(db, 'initial', invitation) != 'accepted':continue
+            elif model is FinalEditorInvitation:
+                if effective_status(db, 'final', invitation) != 'accepted':continue
             return manuscript
 
     raise HTTPException(403, "Manuscript access denied")

@@ -10,7 +10,7 @@ from app import models
 from app.schemas import InitialEditorInvitationDecision
 from app.routers import eic, document_distribution as distribution
 from tests import test_reviewer_download as fixtures
-from tests.test_batch17c_editor_distribution import migration
+from tests.test_batch17c_editor_distribution import migrate_current_distribution
 
 
 def prepare(f):
@@ -27,7 +27,7 @@ def prepare(f):
 def test_invitation_accept_notification_grant_download_and_revoke():
     f=fixtures.ReviewerDownloadsTest();f.setUp()
     try:
-        chief,mid,iid=prepare(f);migration.migrate(f.db_path)
+        chief,mid,iid=prepare(f);migrate_current_distribution(f.db_path)
         private=f.root/'private-22';private.mkdir(mode=0o700)
         with patch.object(distribution,'DATA_ROOT',f.root),patch.dict(os.environ,{'GSUB_DISTRIBUTION_PRIVATE_ROOT':str(private)}):
             before=f.client.get(f'/document-distribution/manuscripts/{mid}/candidates').json()

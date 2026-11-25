@@ -20,7 +20,7 @@
 
 .general-comments-header p {
   margin: 0;
-  color: #64748b;
+  color: var(--control-border);
   font-size: 13px;
 }
 
@@ -43,9 +43,9 @@
 
 .general-comment {
   padding: 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-soft);
   border-radius: 8px;
-  background: #f8fafc;
+  background: var(--surface-secondary);
 }
 
 .general-comment-meta {
@@ -57,7 +57,7 @@
 }
 
 .general-comment-meta time {
-  color: #64748b;
+  color: var(--control-border);
 }
 
 .general-comment > p {
@@ -67,7 +67,7 @@
 }
 
 .general-comments-empty {
-  color: #64748b;
+  color: var(--control-border);
   font-size: 14px;
 }
 
@@ -86,7 +86,7 @@
   width: 100%;
   box-sizing: border-box;
   padding: 11px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--control-border);
   border-radius: 7px;
   font: inherit;
   resize: vertical;
@@ -100,7 +100,7 @@
 }
 
 .general-comments-footer span {
-  color: #64748b;
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
@@ -114,7 +114,9 @@
 }
 
 .general-comments-footer button:disabled {
-  opacity: 0.5;
+  opacity: 1;
+  color: var(--disabled-text);
+  background: var(--disabled-surface);
   cursor: not-allowed;
 }
 

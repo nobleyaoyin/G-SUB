@@ -2,7 +2,7 @@
 // They do not create workflow transitions on navigation.
 export function InitialScreeningStageView({ selected, decision, comments, setDecision, setComments, act, busy, needsRefresh }) {
   return (
-            <section className="eic-action-card">
+            <section className="eic-action-card" id={`eic-initial-screening-${selected}`}>
               <div className="eic-action-card-heading">
                 <span>01</span>
                 <h4>Initial Screening</h4>
@@ -32,7 +32,7 @@ export function InitialScreeningStageView({ selected, decision, comments, setDec
 
 export function EICDecisionStageView({ selected, round, decision, comments, setDecision, setComments, act, busy, needsRefresh }) {
   return (
-            <section className="eic-action-card eic-decision-card">
+            <section className="eic-action-card eic-decision-card" id={`eic-decision-${selected}`} tabIndex={-1}>
               <div className="eic-action-card-heading">
                 <span>05</span>
                 <h4>Editorial Decision</h4>
@@ -40,7 +40,7 @@ export function EICDecisionStageView({ selected, round, decision, comments, setD
               <p>Make the editorial decision for review round {round}.</p>
               <form onSubmit={e => {
                 e.preventDefault();
-                act(`/eic/manuscripts/${selected}/decision`, { decision, comments });
+                act(`/eic/manuscripts/${selected}/decision`, { decision, comments, expected_review_round: round });
               }}>
                 <label>Decision
                   <select required value={decision} onChange={e => setDecision(e.target.value)}>
@@ -62,7 +62,7 @@ export function EICDecisionStageView({ selected, round, decision, comments, setD
 
 export function InitialEditorAssignmentView({ selected, editor, setEditor, editors, act, busy, needsRefresh }) {
   return (
-            <section className="eic-action-card">
+            <section className="eic-action-card" id={`eic-initial-assignment-${selected}`}>
               <div className="eic-action-card-heading">
                 <span>02</span>
                 <h4>Initial Editor Assignment</h4>

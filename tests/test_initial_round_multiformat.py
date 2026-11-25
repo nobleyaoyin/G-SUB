@@ -50,11 +50,12 @@ class InitialRoundMultiFormatTests(unittest.TestCase):
                             self.assertEqual(f.client.post(f'/eic/initial-editing/submissions/{sid}/{action}',json={'decision':'approve','comments':'Approved'}).status_code,200)
                         f.current=f.author
                         self.assertEqual(f.client.post(f'/eic/initial-editing/submissions/{sid}/pre-review-confirmation',json={'decision':'confirm','comments':'Confirmed'}).status_code,200)
+                        f.select_single_blind_policy()
                         assigned=f.assign(f.reviewer,1)
                         self.assertEqual(assigned.status_code,201,assigned.text); aid=assigned.json()['assignment_id']
                         f.current=f.reviewer; download=f.client.get(f'/assignments/{aid}/download')
                         self.assertEqual(download.content,data); self.assertTrue(download.headers['content-type'].startswith(mime)); self.assertIn('.'+ext,download.headers['content-disposition'])
-                        f.current=f.other; self.assertEqual(f.client.get(f'/assignments/{aid}/download').status_code,403)
+                        f.current=f.other; self.assertEqual(f.client.get(f'/assignments/{aid}/download').status_code,409)
                         # Changing the manuscript's unrelated latest path cannot change the round-one binding.
                         m.file_path = f.write(f'uploads/manuscripts/{f.mid}/other.txt', b'other'); f.db.commit(); f.current=f.reviewer
                         self.assertEqual(f.client.get(f'/assignments/{aid}/download').content,data)

@@ -7,7 +7,7 @@ vi.mock("./InitialEditingPanel", () => ({ default: () => <div>Initial editing wo
 vi.mock("./AuthorAgreementPanel", () => ({ default: () => <div>Agreement workflow</div> }));
 vi.mock("./FinalEditingPanel", () => ({ default: () => <div>Final editing workflow</div> }));
 vi.mock("./FormattingPanel", () => ({ default: () => <div>Formatting workflow</div> }));
-vi.mock("./ManuscriptProgress", () => ({ default: ({ manuscriptId }) => <div>Progress details #{manuscriptId}</div> }));
+vi.mock("./ManuscriptProgress", () => ({ default: ({ manuscriptId, fallbackAction }) => <div><p>{fallbackAction}</p><div>Progress details #{manuscriptId}</div></div> }));
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
@@ -26,7 +26,8 @@ it('places private notes before progress and preserves input across disclosure t
   fireEvent.click(summary);
   expect(within(details).getByLabelText('New note').value).toBe('Private unsaved note');
   expect(screen.queryByText('Comments (Staff Shared)')).toBeNull();
-  expect(screen.getByRole('button',{name:'Submit Manuscript'})).toBeTruthy();
+  expect(screen.getByRole('button',{name:'Continue Process'})).toBeTruthy();
+  expect(screen.queryByRole('button',{name:'Submit Manuscript'})).toBeNull();
 });
 
 it('uses the manuscript ID for a blank selected title', async () => {
@@ -50,7 +51,10 @@ it("keeps draft actions and progress above the workflow panels", async () => {
   card = screen.getByText('Synthetic draft').closest('.manuscript-card');
   expect(card.closest('[data-workspace=selected]')).toBeTruthy();
   expect(within(card).getByText('Complete your draft and submit it when ready.')).toBeTruthy();
-  for (const name of ["Upload File", "Download File", "Edit Title", "Edit Abstract", "Submit Manuscript"]) expect(within(card).getByRole("button", { name })).toBeTruthy();
+  for (const name of ["Continue Process", "Edit title", "Edit abstract"]) expect(within(card).getByRole("button", { name })).toBeTruthy();
+  expect(within(card).queryByRole("button", { name: "Upload File" })).toBeNull();
+  expect(within(card).queryByRole("button", { name: "Download file" })).toBeNull();
+  expect(within(card).queryByRole("button", { name: "Submit Manuscript" })).toBeNull();
   const progress = screen.getByText("Progress details #12");
   const wizard = progress.closest(".author-workflows");
 
@@ -61,10 +65,10 @@ it("keeps draft actions and progress above the workflow panels", async () => {
   expect(wizard.querySelector(".author-wizard-navigation")).toBeNull();
   expect(wizard.querySelector(".author-wizard-footer")).toBeNull();
   expect(wizard.querySelector(".author-wizard-header")).toBeNull();
-  fireEvent.click(within(card).getByRole("button", { name: "Back to Manuscripts" }));
+  fireEvent.click(within(card).getByRole("button", { name: "Back to manuscripts" }));
   expect(screen.queryByText("Progress details #12")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "+ New Submission" }));
-  expect(screen.getByLabelText(/Manuscript Title/)).toBeTruthy();
+  expect(screen.getByRole('heading',{name:'Prepare your submission'})).toBeTruthy();
 });
 
 it('selects distinct manuscripts without mixing their timelines', async () => {
@@ -75,7 +79,7 @@ it('selects distinct manuscripts without mixing their timelines', async () => {
   fireEvent.click(within(first).getByRole('button',{name:'Open manuscript'}));
   expect(screen.getByText('Progress details #12')).toBeTruthy();
   expect(screen.queryByText('Synthetic 13')).toBeNull();
-  fireEvent.click(screen.getByRole('button',{name:'Back to Manuscripts'}));
+  fireEvent.click(screen.getByRole('button',{name:'Back to manuscripts'}));
   const second = screen.getByText('Synthetic 13').closest('.manuscript-card');
   fireEvent.click(within(second).getByRole('button',{name:'Open manuscript'}));
   expect(screen.getByText('Progress details #13')).toBeTruthy();
@@ -83,41 +87,44 @@ it('selects distinct manuscripts without mixing their timelines', async () => {
   expect(screen.queryByRole('button',{name:/refresh/i})).toBeNull();
 });
 
-it('keeps the same card and information during upload and clears its busy state', async () => {
-  const manuscript = {manuscript_id:12,title:'Synthetic draft',abstract:'Original abstract',status:'draft',has_pdf:true,created_at:'2026-01-01'};
+async function openWizardUpload(card) {
+  fireEvent.click(within(card).getByRole('button',{name:'Continue Process'}));
+  if (screen.queryByRole('heading',{name:'Review Your Submission'})) fireEvent.click(screen.getByRole('button',{name:'← Previous'}));
+  return within(document.querySelector('.submission-wizard'));
+}
+
+it('keeps wizard information and blocks duplicate upload while busy', async () => {
+  const item={manuscript_id:12,title:'Synthetic draft',abstract:'Original abstract',status:'draft',has_pdf:true,created_at:'2026-01-01'};
   let finishUpload;
-  const json = data => ({ok:true,headers:new Headers({'content-type':'application/json'}),json:async()=>data});
-  vi.stubGlobal('fetch',vi.fn(url => url.endsWith('/upload') ? new Promise(resolve => {finishUpload=resolve}) : Promise.resolve(json(url.includes('/notes') ? [] : url.endsWith('/manuscripts/12') ? manuscript : [manuscript]))));
+  const json=data=>({ok:true,headers:new Headers({'content-type':'application/json'}),json:async()=>data});
+  const fetchMock=vi.fn(url=>url.endsWith('/upload') ? new Promise(resolve=>{finishUpload=resolve}) : Promise.resolve(json(url.includes('/notes')?[]:url.endsWith('/manuscripts/12')?item:[item])));
+  vi.stubGlobal('fetch',fetchMock);
   render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" />);
   fireEvent.click(within((await screen.findByText('Synthetic draft')).closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
-  const card=screen.getByText('Synthetic draft').closest('.manuscript-card');
-  const input=card.querySelector('input[type=file]');
-  fireEvent.click(within(card).getByRole('button',{name:'Upload File'}));
-  fireEvent.change(input,{target:{files:[new File(['hello'],'new.txt',{type:'text/plain'})]}});
-  fireEvent.change(input,{target:{files:[new File(['duplicate'],'duplicate.txt',{type:'text/plain'})]}});
-  expect(fetch.mock.calls.filter(([url]) => url.endsWith('/upload'))).toHaveLength(1);
-  expect(screen.getByText('Original abstract')).toBeTruthy();
-  expect(within(card).getByRole('button',{name:'Uploading...'}).disabled).toBe(true);
+  const wizard=await openWizardUpload(screen.getByText('Synthetic draft').closest('.manuscript-card'));
+  fireEvent.change(wizard.getByLabelText(/Select a Replacement File/),{target:{files:[new File(['hello'],'new.txt')]}});
+  fireEvent.click(wizard.getByRole('button',{name:/^Upload (Replacement )?File$/}));
+  expect(wizard.getByRole('button',{name:'Uploading...'}).disabled).toBe(true);
+  expect(wizard.getByRole('button',{name:'Close submission wizard'}).disabled).toBe(true);
+  expect(wizard.getByText('Synthetic draft')).toBeTruthy();
+  expect(fetchMock.mock.calls.filter(([url])=>url.endsWith('/upload'))).toHaveLength(1);
   finishUpload(json({}));
-  await waitFor(() => expect(within(card).getByRole('button',{name:'Upload File'}).disabled).toBe(false));
-  expect(fetch.mock.calls.filter(([url]) => url.endsWith('/manuscripts/my'))).toHaveLength(1);
-  expect(screen.getByText('Synthetic draft').closest('.manuscript-card')).toBe(card);
-  expect(screen.getByText('Original abstract')).toBeTruthy();
-  fireEvent.click(within(card).getByRole('button',{name:'Back to Manuscripts'}));
-  expect(screen.queryByText('Progress details #12')).toBeNull();
+  await screen.findByRole('heading',{name:'Review Your Submission'});
+  expect(wizard.getByText('Original abstract')).toBeTruthy();
+  expect(fetchMock.mock.calls.filter(([url])=>url.endsWith('/manuscripts/my'))).toHaveLength(1);
 });
 
-it('clears the picker guard on cancellation without treating it as an edit', async () => {
+it('closes the wizard after an empty picker selection without treating it as an edit', async () => {
   const item={manuscript_id:12,title:'Picker draft',abstract:'Original',status:'draft',has_pdf:true,created_at:'2026-01-01'};
   vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,headers:new Headers({'content-type':'application/json'}),json:async()=>[item]})));
-  const confirm = vi.spyOn(window,'confirm');
+  const confirm=vi.spyOn(window,'confirm');
   render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" />);
   fireEvent.click(within((await screen.findByText('Picker draft')).closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
-  const card=screen.getByText('Picker draft').closest('.manuscript-card');
-  fireEvent.click(within(card).getByRole('button',{name:'Upload File'}));
-  fireEvent(card.querySelector('input[type=file]'),new Event('cancel',{bubbles:true}));
-  fireEvent.click(within(card).getByRole('button',{name:'Back to Manuscripts'}));
+  const wizard=await openWizardUpload(screen.getByText('Picker draft').closest('.manuscript-card'));
+  fireEvent.change(wizard.getByLabelText(/Select a Replacement File/),{target:{files:[]}});
+  fireEvent.click(wizard.getByRole('button',{name:'Close submission wizard'}));
   expect(confirm).not.toHaveBeenCalled();
+  expect(screen.getByRole('button',{name:'Continue Process'})).toBeTruthy();
   confirm.mockRestore();
 });
 
@@ -130,146 +137,98 @@ it('re-enables download after an API failure', async () => {
       : {ok:true,headers:new Headers({'content-type':'application/json'}),json:async()=>[item]}));
   render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" />);
   fireEvent.click(within((await screen.findByText('Download draft')).closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
-  fireEvent.click(screen.getByRole('button',{name:'Download File'}));
+  fireEvent.click(screen.getByRole('button',{name:'Continue Process'}));
+  fireEvent.click(screen.getByRole('button',{name:'Download Current File'}));
   expect((await screen.findByRole('alert')).textContent).toContain('Download unavailable');
-  expect(screen.getByRole('button',{name:'Download File'}).disabled).toBe(false);
+  expect(screen.getByRole('button',{name:'Download Current File'}).disabled).toBe(false);
 });
 
-it('ignores a list read started before an upload completed', async () => {
+it('ignores a list read started before a wizard upload completed', async () => {
   const item={manuscript_id:12,title:'Current draft',abstract:'Current',status:'draft',has_pdf:true,created_at:'2026-01-01'};
-  const json = data => ({ok:true,headers:new Headers({'content-type':'application/json'}),json:async()=>data});
+  const json=data=>({ok:true,headers:new Headers({'content-type':'application/json'}),json:async()=>data});
   let reads=0, finishOld;
-  vi.stubGlobal('fetch',vi.fn(url => {
-    if (url.includes('/notes')) return Promise.resolve(json([]));
-    if (url.endsWith('/upload')) return Promise.resolve(json({}));
-    if (url.endsWith('/manuscripts/12')) return Promise.resolve(json(item));
-    reads++;
-    if (reads===2) return new Promise(resolve=>{finishOld=resolve});
+  vi.stubGlobal('fetch',vi.fn(url=>{
+    if(url.includes('/notes')) return Promise.resolve(json([]));
+    if(url.endsWith('/upload')) return Promise.resolve(json({}));
+    if(url.endsWith('/manuscripts/12')) return Promise.resolve(json(item));
+    reads++; if(reads===2) return new Promise(resolve=>{finishOld=resolve});
     return Promise.resolve(json([item]));
   }));
   render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" />);
-  await screen.findByText('Current draft');
-  fireEvent.focus(window);
-  await waitFor(()=>expect(reads).toBe(2));
+  await screen.findByText('Current draft');fireEvent.focus(window);await waitFor(()=>expect(reads).toBe(2));
   fireEvent.click(screen.getByRole('button',{name:'Open manuscript'}));
-  const card=screen.getByText('Current draft').closest('.manuscript-card');
-  fireEvent.change(card.querySelector('input[type=file]'),{target:{files:[new File(['hello'],'new.txt',{type:'text/plain'})]}});
-  await screen.findByText(/file uploaded successfully/);
-  finishOld(json([{...item,title:'Stale draft'}]));
-  await waitFor(()=>expect(screen.queryByText('Stale draft')).toBeNull());
-  expect(screen.getByText('Current draft')).toBeTruthy();
+  const wizard=await openWizardUpload(screen.getByText('Current draft').closest('.manuscript-card'));
+  fireEvent.change(wizard.getByLabelText(/Select a Replacement File/),{target:{files:[new File(['hello'],'new.txt')]}});
+  fireEvent.click(wizard.getByRole('button',{name:/^Upload (Replacement )?File$/}));
+  await screen.findByRole('heading',{name:'Review Your Submission'});
+  await act(async()=>finishOld(json([{...item,title:'Stale draft'}])));
+  fireEvent.click(wizard.getByRole('button',{name:'Close submission wizard'}));
+  expect(screen.queryByText('Stale draft')).toBeNull();expect(screen.getByText('Current draft')).toBeTruthy();
 });
 
-it.each(['paper.pdf', 'paper.docx', 'paper.txt'])('revalidates only the uploaded manuscript after %s', async filename => {
+it.each(['paper.pdf','paper.docx','paper.doc','paper.txt'])('revalidates only the uploaded manuscript after wizard replacement %s', async filename => {
   const items=[12,13].map(id=>({manuscript_id:id,title:`Draft ${id}`,abstract:`Abstract ${id}`,status:'draft',has_pdf:true,created_at:'2026-01-01'}));
   const json=data=>({ok:true,headers:new Headers({'content-type':'application/json'}),json:async()=>data});
   const fetchMock=vi.fn(async url=>json(url.endsWith('/upload') ? {} : url.endsWith('/manuscripts/12') ? items[0] : items));
-  vi.stubGlobal('fetch',fetchMock);
-  render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" />);
-  const first=(await screen.findByText('Draft 12')).closest('.manuscript-card');
-  expect(screen.getByText('Draft 13')).toBeTruthy();
-  fireEvent.click(within(first).getByRole('button',{name:'Open manuscript'}));
-  const card=screen.getByText('Draft 12').closest('.manuscript-card');
-  fireEvent.change(card.querySelector('input[type=file]'),{target:{files:[new File(['synthetic'],filename)]}});
-  await screen.findByText(/file uploaded successfully/);
+  vi.stubGlobal('fetch',fetchMock);render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" />);
+  fireEvent.click(within((await screen.findByText('Draft 12')).closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
+  const wizard=await openWizardUpload(screen.getByText('Draft 12').closest('.manuscript-card'));
+  fireEvent.change(wizard.getByLabelText(/Select a Replacement File/),{target:{files:[new File(['synthetic'],filename)]}});
+  fireEvent.click(wizard.getByRole('button',{name:/^Upload (Replacement )?File$/}));await screen.findByRole('heading',{name:'Review Your Submission'});
   expect(fetchMock.mock.calls.filter(([url])=>url.endsWith('/manuscripts/my'))).toHaveLength(1);
   expect(fetchMock.mock.calls.filter(([url])=>url.endsWith('/manuscripts/12'))).toHaveLength(1);
-  expect(screen.getByText('Draft 12').closest('.manuscript-card')).toBe(card);
-  const editButton = within(card).getByRole('button', {
-    name: 'Edit Title'
-  });
-  expect(editButton).toBeTruthy();
-
-  fireEvent.click(editButton);
-
-  expect(within(card).getByLabelText('Title')).toBeTruthy();
-  fireEvent.click(within(card).getByRole('button',{name:'Edit Abstract'}));
-  expect(within(card).getByLabelText('Abstract')).toBeTruthy();
-
-  // Cancel editing before navigating back.
-  fireEvent.click(within(card).getByRole('button',{name:'Cancel Title'}));
-  fireEvent.click(within(card).getByRole('button',{name:'Cancel Abstract'}));
-
-  fireEvent.click(within(card).getByRole('button',{name:'Back to Manuscripts'}));
-  expect(screen.getByText('Draft 13')).toBeTruthy();
+  fireEvent.click(wizard.getByRole('button',{name:'Close submission wizard'}));
+  const card=screen.getByText('Draft 12').closest('.manuscript-card');
+  expect(within(card).getByRole('button',{name:'Edit title'})).toBeTruthy();
+  fireEvent.click(within(card).getByRole('button',{name:'Back to manuscripts'}));expect(screen.getByText('Draft 13')).toBeTruthy();
 });
 
-it.each(['failure', 'wrong manuscript', 'incomplete response'])('keeps prior details if upload revalidation returns %s', async kind => {
+it.each(['failure','wrong manuscript','incomplete response'])('keeps prior draft if wizard upload revalidation returns %s', async kind => {
   const item={manuscript_id:12,title:'Safe draft',abstract:'Keep this content',status:'draft',has_pdf:true,created_at:'2026-01-01'};
   const json=data=>({ok:true,headers:new Headers({'content-type':'application/json'}),json:async()=>data});
-  vi.stubGlobal('fetch',vi.fn(async url => url.endsWith('/upload') ? json({}) : url.endsWith('/manuscripts/12')
-    ? (kind === 'failure' ? {ok:false} : kind === 'incomplete response' ? json({manuscript_id:12}) : json({...item,manuscript_id:13,title:'Wrong manuscript'})) : json([item])));
+  vi.stubGlobal('fetch',vi.fn(async url=>url.endsWith('/upload')?json({}):url.endsWith('/manuscripts/12')?(kind==='failure'?{ok:false}:kind==='incomplete response'?json({manuscript_id:12}):json({...item,manuscript_id:13,title:'Wrong manuscript'})):json([item])));
   render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" />);
   fireEvent.click(within((await screen.findByText('Safe draft')).closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
-  const card=screen.getByText('Safe draft').closest('.manuscript-card');
-  fireEvent.change(card.querySelector('input[type=file]'),{target:{files:[new File(['synthetic'],'paper.txt')]}});
-  await screen.findByText(/could not be refreshed/);
-  expect(screen.getByText('Keep this content')).toBeTruthy();
+  const wizard=await openWizardUpload(screen.getByText('Safe draft').closest('.manuscript-card'));
+  fireEvent.change(wizard.getByLabelText(/Select a Replacement File/),{target:{files:[new File(['synthetic'],'paper.txt')]}});
+  fireEvent.click(wizard.getByRole('button',{name:/^Upload (Replacement )?File$/}));
+  await screen.findByText(/file upload could not be confirmed/i);
   expect(screen.queryByText('Wrong manuscript')).toBeNull();
-  expect(within(card).getByRole('button',{name:'Upload File'}).disabled).toBe(false);
+  expect(wizard.getByRole('button',{name:/^Upload (Replacement )?File$/}).disabled).toBe(false);
+  vi.stubGlobal('confirm',vi.fn(()=>true));fireEvent.click(wizard.getByRole('button',{name:'Close submission wizard'}));
+  expect(screen.getByText('Keep this content')).toBeTruthy();
 });
 
-it('keeps the same upload button through upload, revalidation, success and retry', async () => {
-  const item={manuscript_id:12,title:'Button draft',abstract:'Unchanged',status:'draft',has_pdf:true,created_at:'2026-01-01'};
+it('allows retry after a wizard upload fails and keeps the operation single-flight', async () => {
+  const item={manuscript_id:12,title:'Retry draft',abstract:'Unchanged',status:'draft',has_pdf:true,created_at:'2026-01-01'};
   const json=data=>({ok:true,headers:new Headers({'content-type':'application/json'}),json:async()=>data});
-  let finishUpload, finishDetails;
-  const fetchMock=vi.fn(url=> {
-    if (url.endsWith('/upload')) return new Promise(resolve=>{finishUpload=resolve});
-    if (url.endsWith('/manuscripts/12')) return new Promise(resolve=>{finishDetails=resolve});
-    return Promise.resolve(json([item]));
-  });
-  vi.stubGlobal('fetch',fetchMock);
-  render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" />);
-  fireEvent.click(within((await screen.findByText('Button draft')).closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
-  const card=screen.getByText('Button draft').closest('.manuscript-card');
-  const button=within(card).getByRole('button',{name:'Upload File'});
-  const observed=['Upload File'];
-  const observer=new MutationObserver(()=>observed.push(button.textContent.trim()));
-  observer.observe(button,{subtree:true,childList:true,characterData:true});
-  const select=()=>fireEvent.change(card.querySelector('input[type=file]'),{target:{files:[new File(['x'],'paper.txt')]}});
-  select();
-  expect(button.textContent.trim()).toBe('Uploading...');
-  finishUpload(json({}));
-  await waitFor(()=>expect(finishDetails).toBeTypeOf('function'));
-  expect(button.textContent.trim()).toBe('Uploading...');
-  expect(button.isConnected).toBe(true);
-  finishDetails(json(item));
-  await waitFor(()=>expect(button.textContent.trim()).toBe('Upload File'));
-  expect(within(card).getByRole('button',{name:'Upload File'})).toBe(button);
-  expect(screen.getByText(/file uploaded successfully/)).toBeTruthy();
-  select();
-  expect(button.textContent.trim()).toBe('Uploading...');
+  let finishUpload;
+  const fetchMock=vi.fn(url=>url.endsWith('/upload')?new Promise(resolve=>{finishUpload=resolve}):Promise.resolve(json(url.endsWith('/manuscripts/12')?item:[item])));
+  vi.stubGlobal('fetch',fetchMock);render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" />);
+  fireEvent.click(within((await screen.findByText('Retry draft')).closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
+  const wizard=await openWizardUpload(screen.getByText('Retry draft').closest('.manuscript-card'));
+  fireEvent.change(wizard.getByLabelText(/Select a Replacement File/),{target:{files:[new File(['x'],'paper.txt')]}});
+  fireEvent.click(wizard.getByRole('button',{name:/^Upload (Replacement )?File$/}));
+  expect(wizard.getByRole('button',{name:'Uploading...'}).disabled).toBe(true);
   finishUpload({ok:false,headers:new Headers({'content-type':'application/json'}),json:async()=>({detail:'Upload failed'})});
-  await waitFor(()=>expect(button.textContent.trim()).toBe('Upload File'));
-  expect(button.disabled).toBe(false);
-  finishDetails=undefined;
-  select();
-  expect(button.textContent.trim()).toBe('Uploading...');
-  finishUpload(json({}));
-  await waitFor(()=>expect(finishDetails).toBeTypeOf('function'));
-  finishDetails(json(item));
-  await waitFor(()=>expect(button.textContent.trim()).toBe('Upload File'));
-  expect(fetchMock.mock.calls.filter(([url])=>url.endsWith('/upload'))).toHaveLength(3);
-  expect(observed.every(label=>['Upload File','Uploading...'].includes(label))).toBe(true);
-  observer.disconnect();
+  await screen.findByText('Upload failed');expect(wizard.getByRole('button',{name:/^Upload (Replacement )?File$/}).disabled).toBe(false);
+  fireEvent.click(wizard.getByRole('button',{name:/^Upload (Replacement )?File$/}));finishUpload(json({}));
+  await screen.findByRole('heading',{name:'Review Your Submission'});
+  expect(fetchMock.mock.calls.filter(([url])=>url.endsWith('/upload'))).toHaveLength(2);
 });
 
-
-it('keeps disabled submission distinct from file upload and describes all supported formats', async () => {
-  const item = {manuscript_id: 12, title: 'No file draft', abstract: 'Synthetic', status: 'draft', has_pdf: false, created_at: '2026-01-01'};
-  vi.stubGlobal('fetch', vi.fn(async () => ({ok: true, headers: new Headers({'content-type': 'application/json'}), json: async () => [item]})));
-  render(<AuthorDashboard user={{name: 'Synthetic'}} token="synthetic" />);
-  const initial = (await screen.findByText('No file draft')).closest('.manuscript-card');
-  fireEvent.click(within(initial).getByRole('button', {name: 'Open manuscript'}));
-  const card = screen.getByText('No file draft').closest('.manuscript-card');
-  const upload = within(card).getByRole('button', {name: 'Upload File'});
-  const submit = within(card).getByRole('button', {name: 'Submit Manuscript'});
-  expect(upload.classList.contains('file-upload-control')).toBe(true);
-  expect(submit.disabled).toBe(true);
-  expect(submit.matches('.manuscript-actions .file-upload-control:disabled')).toBe(false);
-  expect(submit.title).toBe('Upload a PDF, DOCX, DOC, or TXT file before submitting');
+it('keeps submission disabled for an empty draft while the wizard describes the supported formats', async () => {
+  const item={manuscript_id:12,title:'No file draft',abstract:'Synthetic',status:'draft',has_pdf:false,created_at:'2026-01-01'};
+  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,headers:new Headers({'content-type':'application/json'}),json:async()=>[item]})));
+  render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" />);
+  fireEvent.click(within((await screen.findByText('No file draft')).closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
+  const card=screen.getByText('No file draft').closest('.manuscript-card');
+  expect(within(card).queryByRole('button',{name:/^Upload (Replacement )?File$/})).toBeNull();
+  expect(within(card).queryByRole('button',{name:'Submit Manuscript'})).toBeNull();
+  const wizard=await openWizardUpload(card);
+  expect(wizard.getByText(/PDF, DOCX, DOC, or TXT/)).toBeTruthy();
+  expect(wizard.getByRole('button',{name:/^Upload (Replacement )?File$/}).disabled).toBe(true);
 });
-
 
 it('returns the actual author workspace through the registered guarded handler', async () => {
   const items = [1, 2].map(id => ({ manuscript_id:id, title:`Paper ${id}`, abstract:`Abstract ${id}`, status:'draft', has_pdf:true, created_at:'2026-01-01' }));
@@ -282,8 +241,8 @@ it('returns the actual author workspace through the registered guarded handler',
   expect(screen.getAllByText('Paper 1')).toHaveLength(1);
   expect(screen.queryByText('Paper 2')).toBeNull();
   expect(screen.queryByRole('button',{name:'+ New Submission'})).toBeNull();
-  expect(screen.queryByLabelText('Manuscript statistics')).toBeNull();
-  fireEvent.click(screen.getByRole('button',{name:'Edit Title'}));
+  expect(screen.getByLabelText('Manuscript statistics').querySelector('details')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Edit title'}));
   fireEvent.change(screen.getByLabelText('Title'),{target:{value:'Unsaved title'}});
   act(() => { expect(goBack()).toBe(false); });
   expect(screen.getByLabelText('Title').value).toBe('Unsaved title');
@@ -307,4 +266,70 @@ it('keeps private note input when its disclosure is closed and reopened', async 
   fireEvent.click(summary); fireEvent.click(summary);
   expect(screen.getByLabelText('New note').value).toBe('Private unsaved note');
   expect(screen.queryByText('Comments (Staff Shared)')).toBeNull();
+});
+
+it('protects an unsaved detail note when continuing a draft in the wizard', async () => {
+  const item={manuscript_id:12,title:'Private draft',abstract:'Synthetic',status:'draft',has_pdf:false,created_at:'2026-01-01'};
+  vi.stubGlobal('confirm',vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true));
+  vi.stubGlobal('fetch',vi.fn(async url=>({ok:true,status:200,headers:new Headers({'content-type':'application/json'}),json:async()=>String(url).includes('/notes') ? [] : [item]})));
+  render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" />);
+  fireEvent.click(within((await screen.findByText('Private draft')).closest('.manuscript-card')).getByRole('button',{name:'Open manuscript'}));
+  fireEvent.click(screen.getByText('Private Notes'));
+  fireEvent.change(screen.getByLabelText('New note'),{target:{value:'Keep this note'}});
+  fireEvent.click(screen.getByRole('button',{name:'Continue Process'}));
+  expect(window.confirm).toHaveBeenCalledTimes(1);
+  expect(screen.getByLabelText('New note').value).toBe('Keep this note');
+  expect(screen.queryByRole('heading',{name:'Continue Manuscript Submission'})).toBeNull();
+  fireEvent.click(screen.getByRole('button',{name:'Continue Process'}));
+  expect(window.confirm).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole('heading',{name:'Continue Manuscript Submission'})).toBeTruthy();
+  expect(screen.queryByLabelText('New note')).toBeNull();
+});
+
+it('keeps one statistics sidebar and places the abstract above private notes and next step', async () => {
+  const item={manuscript_id:12,title:'Synthetic draft',abstract:'A preserved abstract',status:'draft',has_pdf:true,created_at:'2026-01-01'};
+  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,headers:new Headers({'content-type':'application/json'}),json:async()=>[item]})));
+  render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" />);
+  fireEvent.click(await screen.findByRole('button',{name:'Open manuscript'}));
+  const layout=document.querySelector('.author-content-layout');
+  expect(layout.classList.contains('has-manuscript-detail')).toBe(true);
+  expect(within(layout).getAllByLabelText('Manuscript statistics')).toHaveLength(1);
+  const stats=within(layout).getByLabelText('Manuscript statistics');
+  expect(stats.parentElement).toBe(layout);
+  const summary=within(stats).getByText('Statistics');
+  const wasOpen=summary.closest('details').open;
+  fireEvent.click(summary); expect(summary.closest('details').open).toBe(!wasOpen);
+  fireEvent.click(summary); expect(summary.closest('details').open).toBe(wasOpen);
+  expect(screen.queryByText('Stage Threads')).toBeNull();
+  const next=screen.getByRole('heading',{name:'Next Step'});
+  const abstract=screen.getByRole('region',{name:'Manuscript Abstract'});
+  expect(screen.getAllByRole('region',{name:'Manuscript Abstract'})).toHaveLength(1);
+  const notes=screen.getByText('Private Notes');
+  expect(abstract.compareDocumentPosition(notes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(notes.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const history=screen.getByText('Generation history');
+  const progress=screen.getByText('Progress details #12');
+  const activity=screen.getByText('Activity Timeline');
+  expect(notes.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(history.compareDocumentPosition(progress) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(progress.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(activity.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(within(abstract).getByText('A preserved abstract')).toBeTruthy();
+  expect(screen.getByRole('button',{name:'Continue Process'})).toBeTruthy();
+});
+
+it('keeps one statistics sidebar as a sibling of the Author manuscript list', async () => {
+  const item={manuscript_id:12,title:'Synthetic list record',abstract:'Synthetic',status:'draft',has_pdf:true,created_at:'2026-01-01'};
+  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,headers:new Headers({'content-type':'application/json'}),json:async()=>[item]})));
+  render(<AuthorDashboard user={{name:'Synthetic'}} token="synthetic" section="manuscripts" onSectionChange={()=>{}} />);
+  await screen.findByText('Synthetic list record');
+  const layout=document.querySelector('.author-content-layout');
+  expect(layout.classList.contains('has-manuscript-list')).toBe(true);
+  const sidebar=within(layout).getByLabelText('Manuscript statistics');
+  expect(sidebar.parentElement).toBe(layout);
+  expect(layout.querySelector('.author-primary-content').parentElement).toBe(layout);
+  expect(within(layout).getAllByLabelText('Manuscript statistics')).toHaveLength(1);
+  const summary=within(sidebar).getByText('Statistics');
+  const previous=summary.closest('details').open;
+  fireEvent.click(summary);expect(summary.closest('details').open).toBe(!previous);
 });

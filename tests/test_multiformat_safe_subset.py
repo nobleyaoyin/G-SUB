@@ -50,7 +50,7 @@ class SafeSubsetTest(unittest.TestCase):
         self.assertTrue(download.headers['content-type'].startswith('text/plain'))
         self.assertIn('.txt', download.headers['content-disposition'])
         f.current = f.reviewer
-        self.assertEqual(f.client.get(f'/assignments/{aid}/download').content, b'%PDF-first')
+        self.assertEqual(f.client.get(f'/assignments/{aid}/download').status_code, 409)
         self.assertEqual((f.root / f.pdf).read_bytes(), b'%PDF-first')
 
     def test_final_text_source_txt_proof_and_hash(self):

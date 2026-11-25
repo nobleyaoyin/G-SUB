@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response as HTTPResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -46,7 +46,13 @@ def file_path(relative, folder):
     if not path.is_relative_to(root) or path.suffix.lower() not in allowed or not path.is_file(): raise HTTPException(404,'File unavailable')
     return path
 
-def verified_file(s):
+def verified_file(s, db=None):
+    if db is not None:
+        from app import sample_documents
+        if sample_documents.registered(db, s.manuscript_id):
+            from app.formatting_artifact_read import read_formatting_artifact
+            read_formatting_artifact(s, s.manuscript_id, BASE_DIR, ALLOWED_MANUSCRIPT_EXTENSIONS, MAX_MANUSCRIPT_FILE_SIZE, db=db)
+            return None
     p=file_path(s.file_path,'formatting')
     if hashlib.sha256(p.read_bytes()).hexdigest()!=s.sha256: raise HTTPException(409,'Formatted file integrity check failed')
     return p
@@ -84,7 +90,8 @@ def formatters(user:User=Depends(require_role('eic')),db:Session=Depends(get_db)
 @router.get('/manuscripts/{mid}')
 def manuscript_state(mid:int,user:User=Depends(require_role('eic','author','editor','formatter')),db:Session=Depends(get_db)):
     m=db.get(Manuscript,mid)
-    if not m: raise HTTPException(404,'Manuscript not found')
+    if not m or (m.status=='draft' and (user.role!='author' or m.author_id!=user.user_id)):
+        raise HTTPException(404,'Manuscript not found')
     if user.role=='author' and m.author_id!=user.user_id: raise HTTPException(403,'Not your manuscript')
     if user.role in ('editor','formatter') and not db.scalar(select(FormatterInvitation).where(FormatterInvitation.manuscript_id==mid,FormatterInvitation.formatter_id==user.user_id)):
         raise HTTPException(403,'No formatter invitation')
@@ -139,6 +146,13 @@ def accepted(db,iid,user):
 @router.get('/invitations/{iid}/input')
 def input_pdf(iid:int,user:User=Depends(require_role('editor','formatter')),db:Session=Depends(get_db)):
     i,m,final=accepted(db,iid,user)
+    from app import sample_documents
+    if sample_documents.registered(db, m.manuscript_id):
+        from app.routers.manuscripts import read_final_history_file
+        content, extension = read_final_history_file(final, m.manuscript_id, BASE_DIR, db=db)
+        return HTTPResponse(content, media_type=ALLOWED_MANUSCRIPT_EXTENSIONS[extension], headers={
+            'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff',
+            'Content-Disposition':f'attachment; filename="final-edit-{final.submission_id}{extension}"'})
     path=file_path(final.file_path,'final_editing')
     extension=path.suffix.lower()
     media={'.pdf':'application/pdf','.txt':'text/plain','.doc':'application/msword','.docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}[extension]
@@ -147,24 +161,44 @@ def input_pdf(iid:int,user:User=Depends(require_role('editor','formatter')),db:S
 @router.post('/invitations/{iid}/submit',status_code=201)
 def submit(iid:int,file:UploadFile=File(...),comments:str=Form(...),user:User=Depends(require_role('editor','formatter')),db:Session=Depends(get_db)):
     i,m,_=accepted(db,iid,user)
+    from app import sample_documents
+    sample=sample_documents.registered(db,m.manuscript_id)
+    if sample:
+        connection=db.connection()
+        if connection.dialect.name!='sqlite' or connection.connection.driver_connection.in_transaction: raise HTTPException(503,'Formatting transaction unavailable')
+        connection.exec_driver_sql('BEGIN IMMEDIATE'); db.refresh(i); db.refresh(m)
+        i,m,_=accepted(db,iid,user)
     if m.status!='formatting': raise HTTPException(409,'Manuscript is no longer in formatting')
     comments=comments.strip()
     if not comments or len(comments)>5000: raise HTTPException(400,'Comments required')
     content=file.file.read(MAX_MANUSCRIPT_FILE_SIZE+1)
     extension, media_type = validate_manuscript_file(file.filename, content)
-    directory=guard_demo_path(BASE_DIR/'uploads'/'formatting'/str(m.manuscript_id));directory.mkdir(parents=True,exist_ok=True)
-    path=directory/(uuid4().hex+extension)
+    artifact=None; path=None
+    if sample:
+        from app import sample_stage_artifacts
+        artifact=sample_stage_artifacts.write(db,'formatting',m.manuscript_id,extension,content)
+        stored_path=artifact['identity']
+    else:
+        directory=guard_demo_path(BASE_DIR/'uploads'/'formatting'/str(m.manuscript_id));directory.mkdir(parents=True,exist_ok=True)
+        path=directory/(uuid4().hex+extension);stored_path=str(path.relative_to(BASE_DIR))
     try:
-        with path.open('xb') as f: f.write(content)
-        s=FormattingSubmission(manuscript_id=m.manuscript_id,invitation_id=i.invitation_id,file_path=str(path.relative_to(BASE_DIR)),sha256=hashlib.sha256(content).hexdigest(),status='pending_author',comments=comments)
+        if not sample:
+            with path.open('xb') as f: f.write(content)
+        s=FormattingSubmission(manuscript_id=m.manuscript_id,invitation_id=i.invitation_id,file_path=stored_path,sha256=hashlib.sha256(content).hexdigest(),status='pending_author',comments=comments)
         db.add(s)
+        if sample:
+            db.flush();sample_stage_artifacts.bind(db,s,user.user_id,artifact)
         db.add(Notification(user_id=m.author_id, manuscript_id=m.manuscript_id, notification_type='formatting_review_requested', message='A formatted proof is ready for your review.', is_read=False))
         db.commit();db.refresh(s)
     except IntegrityError:
-        db.rollback();path.unlink(missing_ok=True);raise HTTPException(409,'A formatted version is already awaiting review or approved')
+        db.rollback()
+        if not sample: path.unlink(missing_ok=True)
+        raise HTTPException(409,'A formatted version is already awaiting review or approved')
     except Exception:
-        db.rollback();path.unlink(missing_ok=True);raise
-    return {'submission_id':s.submission_id,'status':s.status}
+        db.rollback()
+        if not sample: path.unlink(missing_ok=True)
+        raise
+    return {'submission_id':s.submission_id,'status':s.status, **({'version_id':artifact['version']} if sample else {})}
 
 @router.get('/submissions/{sid}/download')
 def download(sid:int,user:User=Depends(require_role('author','eic','editor','formatter')),db:Session=Depends(get_db)):
@@ -172,9 +206,11 @@ def download(sid:int,user:User=Depends(require_role('author','eic','editor','for
     if not s: raise HTTPException(404,'Submission not found')
     m=db.get(Manuscript,s.manuscript_id);i=get_invitation(db,s.invitation_id)
     if not (user.role=='eic' or (user.role=='author' and m.author_id==user.user_id) or (user.role in ('editor','formatter') and i.formatter_id==user.user_id and i.status=='accepted')): raise HTTPException(403,'Not authorized')
-    path = verified_file(s)
-    extension = path.suffix.lower()
-    return FileResponse(path,media_type=ALLOWED_MANUSCRIPT_EXTENSIONS[extension],filename=f'formatted-{sid}{extension}')
+    from app.formatting_artifact_read import read_formatting_artifact
+    content,extension=read_formatting_artifact(s,m.manuscript_id,BASE_DIR,ALLOWED_MANUSCRIPT_EXTENSIONS,MAX_MANUSCRIPT_FILE_SIZE,db=db)
+    return HTTPResponse(content,media_type=ALLOWED_MANUSCRIPT_EXTENSIONS[extension],headers={
+        'Cache-Control':'no-store','X-Content-Type-Options':'nosniff',
+        'Content-Disposition':f'attachment; filename="formatted-{sid}{extension}"'})
 
 def review(sid,data,user,db,role):
     s=db.get(FormattingSubmission,sid)
@@ -182,7 +218,7 @@ def review(sid,data,user,db,role):
     m=db.get(Manuscript,s.manuscript_id)
     if role=='author' and m.author_id!=user.user_id: raise HTTPException(403,'Only the author may review')
     if m.status!='formatting': raise HTTPException(409,'Not in formatting')
-    verified_file(s)
+    verified_file(s,db=db)
     expected='pending_author' if role=='author' else 'pending_eic'
     status=('pending_eic' if role=='author' else 'approved') if data.decision=='approve' else role+'_revision_requested'
     values={'status':status,role+'_comments':data.comments,role+'_reviewed_at':datetime.now(timezone.utc)}
@@ -209,7 +245,7 @@ def publish(sid:int,user:User=Depends(require_role('eic')),db:Session=Depends(ge
     if not s: raise HTTPException(404,'Submission not found')
     m=db.get(Manuscript,s.manuscript_id)
     if m.status!='formatting' or s.status!='approved' or not s.author_reviewed_at or not s.eic_reviewed_at or not s.eic_id: raise HTTPException(409,'Author and EIC approvals required')
-    verified_file(s)
+    verified_file(s,db=db)
     db.add(PrototypePublication(manuscript_id=m.manuscript_id,submission_id=s.submission_id,published_by=user.user_id,doi_status='pending_external'));m.status='published'
     try: db.commit()
     except IntegrityError: db.rollback();raise HTTPException(409,'Already published')

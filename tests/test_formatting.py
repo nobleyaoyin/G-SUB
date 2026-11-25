@@ -46,6 +46,16 @@ class FormattingTest(FinalWorkflowTest):
             one=upload(b'%PDF-layout-one');self.assertEqual(one.status_code,201,one.text);sid=one.json()['submission_id']
             self.current=self.other_formatter;self.assertEqual(self.client.get(f'/formatting/submissions/{sid}/download').status_code,403)
             self.current=self.reviewer;self.assertEqual(self.client.get(f'/formatting/submissions/{sid}/download').status_code,403)
+            self.current=self.author
+            with patch.object(formatting,'FileResponse',side_effect=AssertionError('download must not reopen a pathname')):
+                downloaded=self.client.get(f'/formatting/submissions/{sid}/download')
+            self.assertEqual(downloaded.status_code,200)
+            self.assertEqual(downloaded.content,b'%PDF-layout-one')
+            self.assertEqual(downloaded.headers['cache-control'],'no-store')
+            self.db.expire_all(); stored_one=self.db.get(models.FormattingSubmission,sid); stored_path=self.root/stored_one.file_path
+            stored_path.write_bytes(b'%PDF-tampered')
+            self.assertEqual(self.client.get(f'/formatting/submissions/{sid}/download').status_code,409)
+            stored_path.write_bytes(b'%PDF-layout-one')
             self.assertEqual(upload(b'%PDF-duplicate').status_code,409)
             self.assertEqual(self.f_action(self.chief,f'/formatting/submissions/{sid}/publish',{}).status_code,409)
             self.assertEqual(self.f_action(self.other_author,f'/formatting/submissions/{sid}/author-review',{'decision':'approve','comments':'ok'}).status_code,403)
